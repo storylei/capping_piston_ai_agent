@@ -1,0 +1,50 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Python 3 (AI Agent Project)",
+	// Use a pre-built Python image. You can specify a more specific version, e.g., "python:3.10-slim-bullseye"
+	"image": "mcr.microsoft.com/devcontainers/python:3.10",
+	// Or, if you need more complex setup, you can use a Dockerfile
+	// "build": {
+	// 	"dockerfile": "Dockerfile",
+	// 	"context": ".."
+	// },
+
+	// Command to execute after the container is created. This is used to install all Python dependencies from requirements.txt.
+	"postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+
+	// Port forwarding settings (if your application needs to listen on ports, e.g., Streamlit or Flask)
+	"forwardPorts": [], // For example: [8501] if using Streamlit
+
+	// Pre-installed VS Code extensions. This is key to solving your Jupyter issue!
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python", // Python Extension
+				"ms-toolsai.jupyter" // Jupyter Extension
+				// You might also need other extensions, for example:
+				// "ms-python.vscode-pylance", // Pylance (better Python language service)
+				// "ms-azuretools.vscode-docker" // Docker Extension (if you need to interact with Docker)
+			],
+			"settings": {
+				// Recommended VS Code settings
+				"python.defaultInterpreterPath": "/usr/local/bin/python", // Ensure this points to the Python interpreter inside the container
+				"editor.formatOnSave": true,
+				"editor.codeActionsOnSave": {
+					"source.organizeImports": "explicit"
+				}
+			}
+		}
+	},
+
+	// Ports that are automatically opened after the container starts (if your application needs them)
+	// "portsAttributes": {
+	// 	"8501": {
+	// 		"label": "Streamlit App",
+	// 		"onAutoForward": "notify"
+	// 	}
+	// },
+
+	// Remote user, usually keep as default
+	"remoteUser": "vscode"
+}
