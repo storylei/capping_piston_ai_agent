@@ -76,6 +76,13 @@ def display_data_section(df):
             obj_cols = df.select_dtypes(include='object').columns
             desc.loc['mode', obj_cols] = df[obj_cols].mode().iloc[0]
             st.dataframe(desc)
+
+        missing_df = pd.DataFrame({
+            'Missing Count': df.isnull().sum(),
+            'Missing Ratio': df.isnull().mean().round(3)
+        })
+        st.subheader("Missing Value Summary")
+        st.dataframe(missing_df)
         
     with tab2:
         okko_expanded = st.toggle("Show OK/KO Analysis", value=True)
