@@ -3,4 +3,7 @@
 __pycache__/
 *.pyc
 
-autogluon_models
+notebooks/autogluon_models/
+autogluon_models_temp
+data/processed/
+

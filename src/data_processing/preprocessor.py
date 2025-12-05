@@ -19,10 +19,20 @@ class DataPreprocessor:
         self.encoders = {}
         
     def create_ok_ko_labels(self, df: pd.DataFrame, label_col: str, 
-                           ok_values: Union[str, List[str]]) -> pd.DataFrame:
+                           ok_values: Union[str, List[str]], 
+                           drop_original: bool = True) -> pd.DataFrame:
         """
         Create OK/KO labels
         Support multi-class to binary-class conversion
+        
+        Args:
+            df: Input DataFrame
+            label_col: Name of the original label column
+            ok_values: Value(s) to be classified as 'OK'
+            drop_original: Whether to drop the original label column (default True)
+        
+        Returns:
+            DataFrame with OK_KO_Label column (and original column removed if drop_original=True)
         """
         df_copy = df.copy()
         
@@ -33,6 +43,11 @@ class DataPreprocessor:
         df_copy['OK_KO_Label'] = df_copy[label_col].apply(
             lambda x: 'OK' if x in ok_values else 'KO'
         )
+        
+        # Drop original label column to avoid data leakage
+        if drop_original and label_col in df_copy.columns and label_col != 'OK_KO_Label':
+            df_copy = df_copy.drop(columns=[label_col])
+            print(f"ℹ️  Dropped original label column: '{label_col}' (to prevent data leakage)")
         
         print(f"✅ OK/KO label creation completed")
         print(f"OK samples: {sum(df_copy['OK_KO_Label'] == 'OK')}")
