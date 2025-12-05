@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import sys
 import os
 
@@ -8,6 +10,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from data_processing import DataLoader, DataPreprocessor
+from analysis import AnalysisEngine
 
 # Initialize app components
 st.set_page_config(page_title="Statistical AI Agent", layout="wide")
@@ -17,6 +20,8 @@ if 'data_loader' not in st.session_state:
     st.session_state.data_loader = DataLoader()
 if 'data_preprocessor' not in st.session_state:
     st.session_state.data_preprocessor = DataPreprocessor()
+if 'analysis_engine' not in st.session_state:
+    st.session_state.analysis_engine = AnalysisEngine()
 
 def load_data_with_loader(filename):
     """Load data using DataLoader"""
@@ -167,13 +172,17 @@ def display_sidebar(df):
                     )
                 
                                 
+                # Important note about data leakage
+                st.info("ℹ️ Note: The original label column will be removed after creating OK_KO_Label to prevent data leakage in analysis.")
+                
                 # Start preprocessing
                 if st.button("🚀 Start Preprocessing", key="start_preprocessing"):
                     with st.spinner("Processing data..."):
                         try:
-                            # Create OK/KO labels
+                            # Create OK/KO labels (will automatically drop original label column)
                             processed_df = st.session_state.data_preprocessor.create_ok_ko_labels(
-                                df, st.session_state['label_col'], st.session_state['ok_values']
+                                df, st.session_state['label_col'], st.session_state['ok_values'],
+                                drop_original=True  # Explicitly drop original label to prevent data leakage
                             )
                             
                             # Handle missing values
@@ -199,13 +208,14 @@ def display_sidebar(df):
                             st.session_state['preprocessing_summary'] = st.session_state.data_preprocessor.get_preprocessing_summary(df, processed_df)
                             
                             st.success(f"✅ Data preprocessing completed! Saved to: {saved_path}")
+                            st.info(f"ℹ️  Original label column '{st.session_state['label_col']}' has been removed to prevent data leakage.")
                             
                         except Exception as e:
                             st.error(f"Preprocessing failed: {str(e)}")
 
 def display_data_section(df):
     """Upper main area with tab-based data exploration"""
-    tab1, tab2, tab3 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis", "🔬 Advanced Analysis"])
 
     with tab1:
         st.subheader("Raw Data Preview")
@@ -327,6 +337,245 @@ def display_data_section(df):
                     st.dataframe(processed_df[selected_features].describe())
         else:
             st.info("Please complete data preprocessing first")
+
+    with tab4:
+        st.subheader("🔬 Advanced Feature Analysis")
+        
+        if 'processed_df' in st.session_state:
+            processed_df = st.session_state['processed_df']
+            
+            if 'OK_KO_Label' in processed_df.columns:
+                st.info("🎯 This module automatically identifies features that best distinguish between OK and KO cases using statistical tests and machine learning algorithms.")
+                
+                # Analysis configuration
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.subheader("⚙️ Analysis Settings")
+                    
+                    # Analysis method selection
+                    analysis_types = st.multiselect(
+                        "Select analysis methods:",
+                        options=['Statistical Tests', 'Machine Learning Feature Importance', 'Combined Analysis'],
+                        default=['Combined Analysis'],
+                        help="Choose which analysis methods to apply"
+                    )
+                    
+                    # Top features to display
+                    top_n = st.slider("Top N features to display:", min_value=5, max_value=min(20, len(processed_df.columns)-1), value=10)
+                
+                with col2:
+                    st.subheader("📊 Data Summary")
+                    ok_count = len(processed_df[processed_df['OK_KO_Label'] == 'OK'])
+                    ko_count = len(processed_df[processed_df['OK_KO_Label'] == 'KO'])
+                    total_features = len(processed_df.columns) - 1  # Exclude label column
+                    
+                    st.metric("OK Samples", ok_count)
+                    st.metric("KO Samples", ko_count)  
+                    st.metric("Total Features", total_features)
+                
+                # Start Analysis Button
+                if st.button("🚀 Run Advanced Analysis", type="primary"):
+                    if analysis_types:
+                        with st.spinner("Running comprehensive feature analysis... This may take a few moments."):
+                            try:
+                                # Run analysis
+                                analysis_results = st.session_state.analysis_engine.analyze_all(processed_df)
+                                st.session_state['analysis_results'] = analysis_results
+                                st.success("✅ Advanced analysis completed!")
+                            except Exception as e:
+                                st.error(f"Analysis failed: {str(e)}")
+                                st.exception(e)
+                    else:
+                        st.warning("Please select at least one analysis method")
+                
+                # Display Results
+                if 'analysis_results' in st.session_state:
+                    results = st.session_state['analysis_results']
+                    
+                    st.subheader("📋 Analysis Results")
+                    
+                    # Summary metrics
+                    summary = results.get('summary', {})
+                    
+                    if summary:
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("Significant Features", 
+                                     summary['analysis_summary'].get('features_with_statistical_significance', 0))
+                        with col2:
+                            st.metric("ML Models Tested", 
+                                     summary['analysis_summary'].get('ml_models_evaluated', 0))
+                        with col3:
+                            st.metric("Best CV Accuracy", 
+                                     f"{summary['analysis_summary'].get('cross_validated_accuracy', 0):.3f}")
+                        with col4:
+                            st.metric("Consensus Features", 
+                                     len(summary.get('consensus_features', [])))
+                    
+                    # Feature Rankings Tabs
+                    rank_tab1, rank_tab2, rank_tab3 = st.tabs(["🏆 Combined Ranking", "📊 Statistical Analysis", "🤖 ML Feature Importance"])
+                    
+                    with rank_tab1:
+                        st.subheader("🏆 Combined Feature Ranking")
+                        st.write("Features ranked by combining statistical significance and ML importance scores")
+                        
+                        combined_ranking = summary.get('top_ml_features', [])[:top_n]
+                        if combined_ranking:
+                            ranking_df = pd.DataFrame(combined_ranking)
+                            # Handle both 'importance' (from AutoGluon) and 'combined_score' fields
+                            score_field = 'importance' if 'importance' in ranking_df.columns else 'combined_score'
+                            if score_field in ranking_df.columns:
+                                ranking_df[score_field] = ranking_df[score_field].round(4)
+                            st.dataframe(ranking_df, height=400)
+                            
+                            # Visualization
+                            if combined_ranking:
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                features = [item['feature'] for item in combined_ranking]
+                                # Get scores from the appropriate field
+                                scores = [item.get('importance', item.get('combined_score', 0)) for item in combined_ranking]
+                                
+                                bars = ax.barh(features[::-1], scores[::-1])
+                                ax.set_xlabel('Feature Importance Score')
+                                ax.set_title(f'Top {len(features)} Features by Combined Ranking')
+                                
+                                # Color bars by score
+                                if max(scores) > 0:
+                                    for i, bar in enumerate(bars):
+                                        bar.set_color(plt.cm.RdYlBu_r(scores[::-1][i] / max(scores)))
+                                
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                        else:
+                            st.info("No combined ranking available")
+                    
+                    with rank_tab2:
+                        st.subheader("📊 Statistical Analysis Results")
+                        
+                        statistical_results = results.get('statistical_analysis', {})
+                        stat_ranking = summary.get('top_statistical_features', [])[:top_n]
+                        
+                        if stat_ranking:
+                            st.write("Features ranked by statistical significance (p-value and effect size)")
+                            
+                            stat_df = pd.DataFrame(stat_ranking)
+                            if 'p_value' in stat_df.columns:
+                                stat_df['p_value'] = stat_df['p_value'].round(6)
+                            if 'effect_size' in stat_df.columns:
+                                stat_df['effect_size'] = stat_df['effect_size'].round(4)
+                            st.dataframe(stat_df, height=400)
+                            
+                            # P-value visualization
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            features = [item['feature'] for item in stat_ranking]
+                            p_values = [item.get('p_value', 1) for item in stat_ranking]
+                            
+                            # Use negative log p-values for better visualization
+                            import numpy as np
+                            neg_log_p = [-np.log10(max(p, 1e-16)) for p in p_values]
+                            
+                            bars = ax.barh(features[::-1], neg_log_p[::-1])
+                            ax.set_xlabel('-log10(p-value)')
+                            ax.set_title('Statistical Significance of Features')
+                            ax.axvline(-np.log10(0.05), color='red', linestyle='--', alpha=0.7, label='p=0.05 threshold')
+                            ax.legend()
+                            
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                        else:
+                            st.info("No statistical analysis results available")
+                    
+                    with rank_tab3:
+                        st.subheader("🤖 AutoGluon ML Feature Importance")
+                        
+                        ml_results = results.get('feature_importance', {})
+                        
+                        # Display best model info
+                        best_model_info = ml_results.get('best_model', {})
+                        if best_model_info:
+                            st.success(f"🏆 Best Model: **{best_model_info.get('name', 'Unknown')}** | Validation Score: **{best_model_info.get('score_val', 0):.4f}**")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Validation Accuracy", f"{best_model_info.get('score_val', 0):.4f}")
+                            with col2:
+                                if best_model_info.get('fit_time'):
+                                    st.metric("Training Time", f"{best_model_info.get('fit_time', 0):.2f}s")
+                            with col3:
+                                if best_model_info.get('pred_time_val'):
+                                    st.metric("Prediction Time", f"{best_model_info.get('pred_time_val', 0):.4f}s")
+                        
+                        # Model leaderboard
+                        leaderboard = ml_results.get('model_leaderboard', [])
+                        if leaderboard:
+                            st.write("**AutoGluon Model Leaderboard:**")
+                            leaderboard_df = pd.DataFrame(leaderboard)
+                            
+                            # Select relevant columns for display
+                            display_cols = ['model', 'score_val', 'pred_time_val', 'fit_time', 'stack_level']
+                            available_cols = [col for col in display_cols if col in leaderboard_df.columns]
+                            
+                            if available_cols:
+                                display_df = leaderboard_df[available_cols].copy()
+                                # Round numeric columns
+                                for col in display_df.select_dtypes(include=[np.number]).columns:
+                                    display_df[col] = display_df[col].round(4)
+                                st.dataframe(display_df, height=300)
+                        
+                        # Feature importance
+                        feature_importance_info = ml_results.get('feature_importance', {})
+                        if feature_importance_info:
+                            feature_ranking = feature_importance_info.get('feature_ranking', [])[:top_n]
+                            
+                            if feature_ranking:
+                                st.write(f"**Top {len(feature_ranking)} Most Important Features (AutoGluon):**")
+                                
+                                importance_df = pd.DataFrame(feature_ranking)
+                                if not importance_df.empty:
+                                    # Display table
+                                    display_df = importance_df[['feature', 'importance', 'rank']].copy()
+                                    display_df['importance'] = display_df['importance'].round(4)
+                                    st.dataframe(display_df, height=300)
+                                    
+                                    # Feature importance visualization
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    features = display_df['feature'].tolist()
+                                    importances = display_df['importance'].tolist()
+                                    
+                                    bars = ax.barh(features[::-1], importances[::-1])
+                                    ax.set_xlabel('Feature Importance Score')
+                                    ax.set_title('AutoGluon Feature Importance (Permutation-based)')
+                                    
+                                    # Color gradient
+                                    for i, bar in enumerate(bars):
+                                        bar.set_color(plt.cm.viridis(importances[::-1][i] / max(importances)))
+                                    
+                                    plt.tight_layout()
+                                    st.pyplot(fig)
+                            else:
+                                st.info("No feature importance data available")
+                        else:
+                            st.info("Feature importance analysis not yet completed")
+                    
+                    # Consensus Features
+                    if summary.get('consensus_features'):
+                        st.subheader("🎯 Consensus Features")
+                        st.write("Features that appear in both statistical and ML top rankings:")
+                        
+                        consensus_features = summary['consensus_features']
+                        for i, feature in enumerate(consensus_features, 1):
+                            st.write(f"{i}. **{feature}**")
+                        
+                        if len(consensus_features) > 0:
+                            st.success(f"Found {len(consensus_features)} features with strong consensus across methods!")
+                        else:
+                            st.info("No strong consensus features found. Consider reviewing analysis parameters.")
+            else:
+                st.warning("OK/KO labels not found. Please complete preprocessing first.")
+        else:
+            st.info("Please complete data preprocessing to access advanced analysis features.")
 
 def main():
     st.title("🤖 Statistical AI Agent - Data Analysis Platform")
