@@ -473,13 +473,38 @@ class StatisticalAgent:
     
     def _tool_get_feature_importance(self, top_n: int = 10) -> Dict[str, Any]:
         """Get feature importance from analysis results"""
-        if not self.analysis_results or 'feature_importance' not in self.analysis_results:
-            return {
-                'success': False,
-                'message': '⚠️ Feature importance analysis not available. Please run feature importance analysis first.'
-            }
+        import os
+        import pandas as pd
         
-        ranking = self.analysis_results['feature_importance']['feature_ranking'][:top_n]
+        # Try to get from analysis_results first
+        if self.analysis_results and 'feature_importance' in self.analysis_results:
+            ranking = self.analysis_results['feature_importance']['feature_ranking'][:top_n]
+        else:
+            # Try to read from CSV file as fallback
+            csv_path = 'data/processed/feature_importance.csv'
+            if os.path.exists(csv_path):
+                try:
+                    # First column is the feature name (as index)
+                    df = pd.read_csv(csv_path, index_col=0)
+                    df = df.reset_index()  # Convert index to column
+                    df.columns = ['feature'] + list(df.columns[1:])  # Rename first column
+                    ranking = []
+                    for idx, row in df.head(top_n).iterrows():
+                        ranking.append({
+                            'rank': idx + 1,
+                            'feature': row['feature'],
+                            'importance': row['importance']
+                        })
+                except Exception as e:
+                    return {
+                        'success': False,
+                        'message': f'⚠️ Error reading feature importance: {str(e)}'
+                    }
+            else:
+                return {
+                    'success': False,
+                    'message': '⚠️ Feature importance analysis not available. Please run feature importance analysis first in Tab 4 (Advanced Analysis).'
+                }
         
         message = f"🎯 Top {len(ranking)} Important Features:\n\n"
         for item in ranking:

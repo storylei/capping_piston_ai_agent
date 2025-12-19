@@ -453,103 +453,129 @@ def display_data_section(df):
                             st.metric("Consensus Features", 
                                      len(summary.get('consensus_features', [])))
                     
-                    # Feature Rankings Tabs
-                    rank_tab1, rank_tab2, rank_tab3 = st.tabs(["🏆 Combined Ranking", "📊 Statistical Analysis", "🤖 ML Feature Importance"])
+                    # Feature Rankings Tabs - dynamically create based on selected methods
+                    tab_names = []
+                    if 'Combined Analysis' in analysis_types:
+                        tab_names.extend(["🏆 Combined Ranking", "📊 Statistical Analysis", "🤖 ML Feature Importance"])
+                    else:
+                        if 'Statistical Tests' in analysis_types:
+                            tab_names.append("📊 Statistical Analysis")
+                        if 'Machine Learning Feature Importance' in analysis_types:
+                            tab_names.append("🤖 ML Feature Importance")
                     
-                    with rank_tab1:
-                        st.subheader("🏆 Combined Feature Ranking")
-                        st.write("Features ranked by combining statistical significance and ML importance scores")
+                    # Create tabs based on selected methods
+                    if not tab_names:
+                        st.warning("Please select at least one analysis method")
+                    else:
+                        tabs = st.tabs(tab_names)
                         
-                        combined_ranking = summary.get('top_ml_features', [])[:top_n]
-                        if combined_ranking:
-                            ranking_df = pd.DataFrame(combined_ranking)
-                            # Handle both 'importance' (from AutoGluon) and 'combined_score' fields
-                            score_field = 'importance' if 'importance' in ranking_df.columns else 'combined_score'
-                            if score_field in ranking_df.columns:
-                                ranking_df[score_field] = ranking_df[score_field].round(4)
-                            st.dataframe(ranking_df, height=400)
-                            
-                            # Visualization
-                            if combined_ranking:
-                                fig, ax = plt.subplots(figsize=(10, 6))
-                                features = [item['feature'] for item in combined_ranking]
-                                # Get scores from the appropriate field
-                                scores = [item.get('importance', item.get('combined_score', 0)) for item in combined_ranking]
+                        # Map tabs to content
+                        tab_idx = 0
+                        
+                        # Combined Ranking (only if Combined Analysis selected)
+                        if 'Combined Analysis' in analysis_types:
+                            with tabs[tab_idx]:
+                                st.subheader("🏆 Combined Feature Ranking")
+                                st.write("Features ranked by combining statistical significance and ML importance scores")
                                 
-                                bars = ax.barh(features[::-1], scores[::-1])
-                                ax.set_xlabel('Feature Importance Score')
-                                ax.set_title(f'Top {len(features)} Features by Combined Ranking')
+                                combined_ranking = summary.get('top_ml_features', [])[:top_n]
+                                if combined_ranking:
+                                    ranking_df = pd.DataFrame(combined_ranking)
+                                    # Handle both 'importance' (from AutoGluon) and 'combined_score' fields
+                                    score_field = 'importance' if 'importance' in ranking_df.columns else 'combined_score'
+                                    if score_field in ranking_df.columns:
+                                        ranking_df[score_field] = ranking_df[score_field].round(4)
+                                    st.dataframe(ranking_df, height=400)
+                                    
+                                    # Visualization
+                                    if combined_ranking:
+                                        fig, ax = plt.subplots(figsize=(10, 6))
+                                        features = [item['feature'] for item in combined_ranking]
+                                        # Get scores from the appropriate field
+                                        scores = [item.get('importance', item.get('combined_score', 0)) for item in combined_ranking]
+                                        
+                                        bars = ax.barh(features[::-1], scores[::-1])
+                                        ax.set_xlabel('Feature Importance Score')
+                                        ax.set_title(f'Top {len(features)} Features by Combined Ranking')
+                                        
+                                        # Color bars by score
+                                        if max(scores) > 0:
+                                            for i, bar in enumerate(bars):
+                                                bar.set_color(plt.cm.RdYlBu_r(scores[::-1][i] / max(scores)))
+                                        
+                                        plt.tight_layout()
+                                        st.pyplot(fig)
+                                        plt.close(fig)
+                                else:
+                                    st.info("No combined ranking available")
+                            tab_idx += 1
+                        
+                        # Statistical Analysis
+                        if 'Statistical Tests' in analysis_types or 'Combined Analysis' in analysis_types:
+                            with tabs[tab_idx]:
+                                st.subheader("📊 Statistical Analysis Results")
                                 
-                                # Color bars by score
-                                if max(scores) > 0:
-                                    for i, bar in enumerate(bars):
-                                        bar.set_color(plt.cm.RdYlBu_r(scores[::-1][i] / max(scores)))
+                                statistical_results = results.get('statistical_analysis', {})
+                                stat_ranking = summary.get('top_statistical_features', [])[:top_n]
                                 
-                                plt.tight_layout()
-                                st.pyplot(fig)
-                        else:
-                            st.info("No combined ranking available")
-                    
-                    with rank_tab2:
-                        st.subheader("📊 Statistical Analysis Results")
+                                if stat_ranking:
+                                    st.write("Features ranked by statistical significance (p-value and effect size)")
+                                    
+                                    stat_df = pd.DataFrame(stat_ranking)
+                                    if 'p_value' in stat_df.columns:
+                                        stat_df['p_value'] = stat_df['p_value'].round(6)
+                                    if 'effect_size' in stat_df.columns:
+                                        stat_df['effect_size'] = stat_df['effect_size'].round(4)
+                                    st.dataframe(stat_df, height=400)
+                                    
+                                    # P-value visualization
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    features = [item['feature'] for item in stat_ranking]
+                                    p_values = [item.get('p_value', 1) for item in stat_ranking]
+                                    
+                                    # Use negative log p-values for better visualization
+                                    import numpy as np
+                                    neg_log_p = [-np.log10(max(p, 1e-16)) for p in p_values]
+                                    
+                                    bars = ax.barh(features[::-1], neg_log_p[::-1])
+                                    ax.set_xlabel('-log10(p-value)')
+                                    ax.set_title('Statistical Significance of Features')
+                                    ax.axvline(-np.log10(0.05), color='red', linestyle='--', alpha=0.7, label='p=0.05 threshold')
+                                    ax.legend()
+                                    
+                                    plt.tight_layout()
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+                                else:
+                                    st.info("No statistical analysis results available")
+                            tab_idx += 1
                         
-                        statistical_results = results.get('statistical_analysis', {})
-                        stat_ranking = summary.get('top_statistical_features', [])[:top_n]
-                        
-                        if stat_ranking:
-                            st.write("Features ranked by statistical significance (p-value and effect size)")
-                            
-                            stat_df = pd.DataFrame(stat_ranking)
-                            if 'p_value' in stat_df.columns:
-                                stat_df['p_value'] = stat_df['p_value'].round(6)
-                            if 'effect_size' in stat_df.columns:
-                                stat_df['effect_size'] = stat_df['effect_size'].round(4)
-                            st.dataframe(stat_df, height=400)
-                            
-                            # P-value visualization
-                            fig, ax = plt.subplots(figsize=(10, 6))
-                            features = [item['feature'] for item in stat_ranking]
-                            p_values = [item.get('p_value', 1) for item in stat_ranking]
-                            
-                            # Use negative log p-values for better visualization
-                            import numpy as np
-                            neg_log_p = [-np.log10(max(p, 1e-16)) for p in p_values]
-                            
-                            bars = ax.barh(features[::-1], neg_log_p[::-1])
-                            ax.set_xlabel('-log10(p-value)')
-                            ax.set_title('Statistical Significance of Features')
-                            ax.axvline(-np.log10(0.05), color='red', linestyle='--', alpha=0.7, label='p=0.05 threshold')
-                            ax.legend()
-                            
-                            plt.tight_layout()
-                            st.pyplot(fig)
-                        else:
-                            st.info("No statistical analysis results available")
-                    
-                    with rank_tab3:
-                        st.subheader("🤖 AutoGluon ML Feature Importance")
-                        
-                        ml_results = results.get('feature_importance', {})
-                        
-                        # Display best model info
-                        best_model_info = ml_results.get('best_model', {})
-                        if best_model_info:
-                            st.success(f"🏆 Best Model: **{best_model_info.get('name', 'Unknown')}** | Validation Score: **{best_model_info.get('score_val', 0):.4f}**")
-                            
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Validation Accuracy", f"{best_model_info.get('score_val', 0):.4f}")
-                            with col2:
-                                if best_model_info.get('fit_time'):
-                                    st.metric("Training Time", f"{best_model_info.get('fit_time', 0):.2f}s")
-                            with col3:
-                                if best_model_info.get('pred_time_val'):
-                                    st.metric("Prediction Time", f"{best_model_info.get('pred_time_val', 0):.4f}s")
-                        
-                        # Model leaderboard
-                        leaderboard = ml_results.get('model_leaderboard', [])
-                        if leaderboard:
-                            st.write("**AutoGluon Model Leaderboard:**")
+                        # ML Feature Importance
+                        if 'Machine Learning Feature Importance' in analysis_types or 'Combined Analysis' in analysis_types:
+                            with tabs[tab_idx]:
+                                st.subheader("🤖 AutoGluon ML Feature Importance")
+                                
+                                ml_results = results.get('feature_importance', {})
+                                
+                                # Display best model info
+                                best_model_info = ml_results.get('best_model', {})
+                                if best_model_info:
+                                    st.success(f"🏆 Best Model: **{best_model_info.get('name', 'Unknown')}** | Validation Score: **{best_model_info.get('score_val', 0):.4f}**")
+                                    
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("Validation Accuracy", f"{best_model_info.get('score_val', 0):.4f}")
+                                    with col2:
+                                        if best_model_info.get('fit_time'):
+                                            st.metric("Training Time", f"{best_model_info.get('fit_time', 0):.2f}s")
+                                    with col3:
+                                        if best_model_info.get('pred_time_val'):
+                                            st.metric("Prediction Time", f"{best_model_info.get('pred_time_val', 0):.4f}s")
+                                
+                                # Model leaderboard
+                                leaderboard = ml_results.get('model_leaderboard', [])
+                                if leaderboard:
+                                    st.write("**AutoGluon Model Leaderboard:**")
                             leaderboard_df = pd.DataFrame(leaderboard)
                             
                             # Select relevant columns for display
@@ -740,10 +766,10 @@ def display_data_section(df):
                             'content': error_msg
                         })
             
-            # Display Chat History (newest at top, right below input box)
+            # Display Chat History (newest at bottom, near input box)
             chat_container = st.container()
             with chat_container:
-                # Reverse the history to show newest first
+                # Show chat history from newest to oldest (reversed)
                 for msg in reversed(st.session_state.chat_history):
                     with st.chat_message(msg['role']):
                         st.markdown(msg['content'])
