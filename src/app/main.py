@@ -11,6 +11,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from data_processing import DataLoader, DataPreprocessor
 from analysis import AnalysisEngine
+from agent import StatisticalAgent
 
 # Initialize app components
 st.set_page_config(page_title="Statistical AI Agent", layout="wide")
@@ -22,6 +23,17 @@ if 'data_preprocessor' not in st.session_state:
     st.session_state.data_preprocessor = DataPreprocessor()
 if 'analysis_engine' not in st.session_state:
     st.session_state.analysis_engine = AnalysisEngine()
+
+# Initialize AI Agent
+if 'agent' not in st.session_state:
+    # Default to Ollama for local deployment (as per project requirements)
+    backend = os.getenv("LLM_BACKEND", "ollama")
+    api_key = os.getenv("OPENAI_API_KEY", None)
+    st.session_state.agent = StatisticalAgent(llm_backend=backend, api_key=api_key)
+
+# Initialize chat history
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
 
 def load_data_with_loader(filename):
     """Load data using DataLoader"""
@@ -215,7 +227,7 @@ def display_sidebar(df):
 
 def display_data_section(df):
     """Upper main area with tab-based data exploration"""
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis", "🔬 Advanced Analysis"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis", "🔬 Advanced Analysis", "🤖 AI Agent Chat"])
 
     with tab1:
         st.subheader("Raw Data Preview")
@@ -281,6 +293,7 @@ def display_data_section(df):
                     ax.pie(distribution.values, labels=distribution.index, autopct='%1.1f%%')
                     ax.set_title("OK/KO Distribution")
                     st.pyplot(fig)
+                    plt.close(fig)  # Fix: Close figure to prevent memory leak
                 
                 with col2:
                     st.bar_chart(distribution)
@@ -293,9 +306,34 @@ def display_data_section(df):
         if 'processed_df' in st.session_state:
             processed_df = st.session_state['processed_df']
             
-            # Select features to analyze
+            # Select features to analyze - exclude non-meaningful numerical columns
             numerical_cols = processed_df.select_dtypes(include=['int64', 'float64']).columns.tolist()
-            selected_features = st.multiselect("Select numerical features to analyze:", numerical_cols)
+            
+            # Define columns that should be excluded (IDs, categorical variables, etc.)
+            exclude_patterns = ['ticket', 'cabin', 'embarked', 'sex', 'name', 'passengerid']
+            
+            # Filter out columns that are IDs, encoded categoricals, or categorical variables
+            meaningful_numerical = []
+            for col in numerical_cols:
+                if col == 'OK_KO_Label':
+                    continue
+                # Skip columns matching exclude patterns
+                if any(pattern in col.lower() for pattern in exclude_patterns):
+                    continue
+                # Skip columns with very high cardinality (likely IDs)
+                if processed_df[col].nunique() > len(processed_df) * 0.9:
+                    continue
+                # Skip columns with very few unique values (likely encoded categories)
+                # But keep Pclass-like features (1,2,3) which are actually ordinal
+                if processed_df[col].nunique() <= 3 and col.lower() not in ['pclass', 'sibsp', 'parch']:
+                    continue
+                meaningful_numerical.append(col)
+            
+            selected_features = st.multiselect(
+                "Select numerical features to analyze:", 
+                meaningful_numerical,
+                help="Only continuous numerical features are shown. Categorical variables and IDs are excluded."
+            )
             
             if selected_features:
                 if 'OK_KO_Label' in processed_df.columns:
@@ -332,6 +370,7 @@ def display_data_section(df):
                         ax.set_title(f'{feature} Distribution Comparison')
                         ax.legend()
                         st.pyplot(fig)
+                        plt.close(fig)  # Fix: Close figure to prevent memory leak
                 else:
                     # Basic statistical analysis
                     st.dataframe(processed_df[selected_features].describe())
@@ -576,6 +615,143 @@ def display_data_section(df):
                 st.warning("OK/KO labels not found. Please complete preprocessing first.")
         else:
             st.info("Please complete data preprocessing to access advanced analysis features.")
+    
+    with tab5:
+        st.subheader("🤖 AI Agent - Natural Language Data Analysis")
+        st.markdown("Ask questions about your data or request plots in natural language!")
+        
+        if 'processed_df' not in st.session_state or st.session_state['processed_df'] is None:
+            st.warning("⚠️ Please complete data preprocessing first to use the AI Agent.")
+            st.info("The AI Agent needs preprocessed data with OK/KO labels to perform analysis.")
+        else:
+            processed_df = st.session_state['processed_df']
+            
+            # AI Agent Configuration in Sidebar
+            with st.sidebar:
+                st.header("🤖 AI Agent Settings")
+                
+                st.info("🎯 **Local Deployment Mode**\n\nThis project uses local LLAMA3 via Ollama (as per project requirements)")
+                
+                # LLM Backend Selection
+                llm_backend = st.selectbox(
+                    "LLM Backend:",
+                    options=["ollama", "openai"],
+                    index=0,  # Default to ollama
+                    help="Ollama = Local LLAMA3 (recommended). OpenAI = Cloud API (backup option)."
+                )
+                
+                if llm_backend == "ollama":
+                    st.success("✅ Using Local LLM (LLAMA3)")
+                    st.markdown("""
+                    **Setup Instructions:**
+                    1. Download: https://ollama.ai/download
+                    2. Install Ollama
+                    3. Run: `ollama pull llama3`
+                    4. Ollama service should start automatically
+                    """)
+                else:
+                    st.warning("⚠️ Using OpenAI API (requires API key)")
+                    api_key_input = st.text_input(
+                        "OpenAI API Key:",
+                        type="password",
+                        value=os.getenv("OPENAI_API_KEY", ""),
+                        help="Backup option - Enter API key"
+                    )
+                    if api_key_input:
+                        os.environ["OPENAI_API_KEY"] = api_key_input
+                
+                # Update agent backend if changed
+                if st.button("🔄 Update Agent Backend"):
+                    try:
+                        st.session_state.agent = StatisticalAgent(
+                            llm_backend=llm_backend,
+                            api_key=os.getenv("OPENAI_API_KEY")
+                        )
+                        st.success(f"✅ Agent backend updated to {llm_backend}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+                
+                if st.button("🗑️ Clear Chat History"):
+                    st.session_state.chat_history = []
+                    st.session_state.agent.clear_conversation()
+                    st.success("Chat history cleared!")
+            
+            # Update Agent's data context
+            if st.session_state.agent.current_data is None or \
+               st.session_state.agent.current_data.shape != processed_df.shape:
+                st.session_state.agent.set_data_context(processed_df, {
+                    'filename': st.session_state.get('selected_file', 'Unknown'),
+                    'label_col': st.session_state.get('label_col', 'Unknown')
+                })
+                
+                # Set analysis results if available
+                if 'analysis_results' in st.session_state:
+                    st.session_state.agent.set_analysis_results(st.session_state['analysis_results'])
+            
+            # Example queries
+            st.markdown("### 💡 Example Queries:")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("""
+                **Statistical Analysis:**
+                - "Show me the statistical summary for all features"
+                - "What's the mean and std for Age in OK vs KO?"
+                - "Get feature importance ranking"
+                """)
+            
+            with col2:
+                st.markdown("""
+                **Visualization:**
+                - "Show the distribution of Age"
+                - "Compare Fare between OK and KO groups"
+                - "Plot boxplot for Pclass"
+                """)
+            
+            st.markdown("---")
+            
+            # Chat Input (put BEFORE chat history for better UX)
+            user_input = st.chat_input("Ask a question about your data or request a plot...")
+            
+            # Process user input first
+            if user_input:
+                # Add user message to history
+                st.session_state.chat_history.append({
+                    'role': 'user',
+                    'content': user_input
+                })
+                
+                # Get AI response
+                with st.spinner("🤔 Thinking..."):
+                    try:
+                        response = st.session_state.agent.chat(user_input)
+                        
+                        # Add assistant response to history
+                        st.session_state.chat_history.append({
+                            'role': 'assistant',
+                            'content': response['response'],
+                            'plots': response.get('plots', [])
+                        })
+                        
+                    except Exception as e:
+                        error_msg = f"❌ Error: {str(e)}"
+                        st.session_state.chat_history.append({
+                            'role': 'assistant',
+                            'content': error_msg
+                        })
+            
+            # Display Chat History (newest at top, right below input box)
+            chat_container = st.container()
+            with chat_container:
+                # Reverse the history to show newest first
+                for msg in reversed(st.session_state.chat_history):
+                    with st.chat_message(msg['role']):
+                        st.markdown(msg['content'])
+                        
+                        # Display plots if any
+                        if msg.get('plots'):
+                            for plot_fig in msg['plots']:
+                                st.pyplot(plot_fig)
 
 def main():
     st.title("🤖 Statistical AI Agent - Data Analysis Platform")
