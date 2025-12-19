@@ -167,7 +167,10 @@ class PlottingTools:
             if column not in df.columns:
                 return {'error': f"Column '{column}' not found in dataset"}
             
-            fig, ax = plt.subplots(figsize=(10, 6))
+            # Force create a new figure to avoid caching issues
+            plt.close('all')
+            fig = plt.figure(figsize=(10, 6))
+            ax = fig.add_subplot(111)
             
             if group_by not in df.columns:
                 return {'error': f"Group column '{group_by}' not found"}

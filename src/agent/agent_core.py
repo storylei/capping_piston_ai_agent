@@ -478,8 +478,23 @@ class StatisticalAgent:
         
         # Try to get from analysis_results first
         if self.analysis_results and 'feature_importance' in self.analysis_results:
-            ranking = self.analysis_results['feature_importance']['feature_ranking'][:top_n]
+            feature_imp_data = self.analysis_results['feature_importance']
+            # Check if it has nested structure or direct feature_ranking
+            if isinstance(feature_imp_data, dict):
+                if 'feature_ranking' in feature_imp_data:
+                    ranking = feature_imp_data['feature_ranking'][:top_n]
+                elif 'feature_importance' in feature_imp_data and 'feature_ranking' in feature_imp_data['feature_importance']:
+                    ranking = feature_imp_data['feature_importance']['feature_ranking'][:top_n]
+                else:
+                    # Fallback to CSV
+                    ranking = None
+            else:
+                ranking = None
         else:
+            ranking = None
+        
+        # If no ranking from analysis_results, try CSV file
+        if ranking is None:
             # Try to read from CSV file as fallback
             csv_path = 'data/processed/feature_importance.csv'
             if os.path.exists(csv_path):

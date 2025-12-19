@@ -709,10 +709,10 @@ def display_data_section(df):
                     'filename': st.session_state.get('selected_file', 'Unknown'),
                     'label_col': st.session_state.get('label_col', 'Unknown')
                 })
-                
-                # Set analysis results if available
-                if 'analysis_results' in st.session_state:
-                    st.session_state.agent.set_analysis_results(st.session_state['analysis_results'])
+            
+            # Always sync analysis results if available (even if data shape hasn't changed)
+            if 'analysis_results' in st.session_state:
+                st.session_state.agent.set_analysis_results(st.session_state['analysis_results'])
             
             # Example queries
             st.markdown("### 💡 Example Queries:")
@@ -750,6 +750,9 @@ def display_data_section(df):
                 # Get AI response
                 with st.spinner("🤔 Thinking..."):
                     try:
+                        # Clear all previous matplotlib figures to prevent caching issues
+                        plt.close('all')
+                        
                         response = st.session_state.agent.chat(user_input)
                         
                         # Add assistant response to history
