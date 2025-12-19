@@ -534,7 +534,6 @@ def display_data_section(df):
                                     p_values = [item.get('p_value', 1) for item in stat_ranking]
                                     
                                     # Use negative log p-values for better visualization
-                                    import numpy as np
                                     neg_log_p = [-np.log10(max(p, 1e-16)) for p in p_values]
                                     
                                     bars = ax.barh(features[::-1], neg_log_p[::-1])
@@ -576,53 +575,54 @@ def display_data_section(df):
                                 leaderboard = ml_results.get('model_leaderboard', [])
                                 if leaderboard:
                                     st.write("**AutoGluon Model Leaderboard:**")
-                            leaderboard_df = pd.DataFrame(leaderboard)
-                            
-                            # Select relevant columns for display
-                            display_cols = ['model', 'score_val', 'pred_time_val', 'fit_time', 'stack_level']
-                            available_cols = [col for col in display_cols if col in leaderboard_df.columns]
-                            
-                            if available_cols:
-                                display_df = leaderboard_df[available_cols].copy()
-                                # Round numeric columns
-                                for col in display_df.select_dtypes(include=[np.number]).columns:
-                                    display_df[col] = display_df[col].round(4)
-                                st.dataframe(display_df, height=300)
-                        
-                        # Feature importance
-                        feature_importance_info = ml_results.get('feature_importance', {})
-                        if feature_importance_info:
-                            feature_ranking = feature_importance_info.get('feature_ranking', [])[:top_n]
-                            
-                            if feature_ranking:
-                                st.write(f"**Top {len(feature_ranking)} Most Important Features (AutoGluon):**")
+                                    leaderboard_df = pd.DataFrame(leaderboard)
+                                    
+                                    # Select relevant columns for display
+                                    display_cols = ['model', 'score_val', 'pred_time_val', 'fit_time', 'stack_level']
+                                    available_cols = [col for col in display_cols if col in leaderboard_df.columns]
+                                    
+                                    if available_cols:
+                                        display_df = leaderboard_df[available_cols].copy()
+                                        # Round numeric columns
+                                        for col in display_df.select_dtypes(include=[np.number]).columns:
+                                            display_df[col] = display_df[col].round(4)
+                                        st.dataframe(display_df, height=300)
                                 
-                                importance_df = pd.DataFrame(feature_ranking)
-                                if not importance_df.empty:
-                                    # Display table
-                                    display_df = importance_df[['feature', 'importance', 'rank']].copy()
-                                    display_df['importance'] = display_df['importance'].round(4)
-                                    st.dataframe(display_df, height=300)
+                                # Feature importance
+                                feature_importance_info = ml_results.get('feature_importance', {})
+                                if feature_importance_info:
+                                    feature_ranking = feature_importance_info.get('feature_ranking', [])[:top_n]
                                     
-                                    # Feature importance visualization
-                                    fig, ax = plt.subplots(figsize=(10, 6))
-                                    features = display_df['feature'].tolist()
-                                    importances = display_df['importance'].tolist()
-                                    
-                                    bars = ax.barh(features[::-1], importances[::-1])
-                                    ax.set_xlabel('Feature Importance Score')
-                                    ax.set_title('AutoGluon Feature Importance (Permutation-based)')
-                                    
-                                    # Color gradient
-                                    for i, bar in enumerate(bars):
-                                        bar.set_color(plt.cm.viridis(importances[::-1][i] / max(importances)))
-                                    
-                                    plt.tight_layout()
-                                    st.pyplot(fig)
-                            else:
-                                st.info("No feature importance data available")
-                        else:
-                            st.info("Feature importance analysis not yet completed")
+                                    if feature_ranking:
+                                        st.write(f"**Top {len(feature_ranking)} Most Important Features (AutoGluon):**")
+                                        
+                                        importance_df = pd.DataFrame(feature_ranking)
+                                        if not importance_df.empty:
+                                            # Display table
+                                            display_df = importance_df[['feature', 'importance', 'rank']].copy()
+                                            display_df['importance'] = display_df['importance'].round(4)
+                                            st.dataframe(display_df, height=300)
+                                            
+                                            # Feature importance visualization
+                                            fig, ax = plt.subplots(figsize=(10, 6))
+                                            features = display_df['feature'].tolist()
+                                            importances = display_df['importance'].tolist()
+                                            
+                                            bars = ax.barh(features[::-1], importances[::-1])
+                                            ax.set_xlabel('Feature Importance Score')
+                                            ax.set_title('AutoGluon Feature Importance (Permutation-based)')
+                                            
+                                            # Color gradient
+                                            for i, bar in enumerate(bars):
+                                                bar.set_color(plt.cm.viridis(importances[::-1][i] / max(importances)))
+                                            
+                                            plt.tight_layout()
+                                            st.pyplot(fig)
+                                            plt.close(fig)
+                                    else:
+                                        st.info("No feature importance data available")
+                                else:
+                                    st.info("Feature importance analysis not yet completed")
                     
                     # Consensus Features
                     if summary.get('consensus_features'):
