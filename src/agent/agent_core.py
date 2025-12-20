@@ -1,12 +1,18 @@
 """
-Statistical AI Agent Core Module
-Orchestrates LLM, tools, and conversation management
+Statistical AI Agent Core Module (Stable Version)
+- Deterministic tools produce ALL numbers and plot summaries.
+- Agent NEVER asks LLM to compute or invent numeric facts.
+- LLM is only used for fallback general chat, not for tool-result generation.
 """
 
+import os
+import re
 import json
-import pandas as pd
+from typing import Dict, List, Optional, Any, Callable, Tuple
+
 import numpy as np
-from typing import Dict, List, Optional, Any, Callable
+import pandas as pd
+
 from .llm_interface import LLMInterface
 from .conversation import ConversationManager
 from .plotting_tools import PlottingTools
@@ -14,546 +20,494 @@ from .plotting_tools import PlottingTools
 
 class StatisticalAgent:
     """
-    AI Agent for statistical analysis and visualization
-    Uses LLM to understand user requests and call appropriate tools
+    Stable Statistical AI Agent:
+    1) Parse intent (rule-based, deterministic)
+    2) Call tools (Python)
+    3) Produce explanation ONLY from tool outputs (no hallucination)
     """
-    
-    def __init__(self, 
-                 llm_backend: str = "ollama",
-                 llm_model: str = None,
-                 api_key: str = None):
-        """
-        Initialize the Statistical AI Agent
-        
-        Args:
-            llm_backend: "ollama" or "openai"
-            llm_model: Model name
-            api_key: API key for OpenAI (if using openai backend)
-        """
+
+    def __init__(
+        self,
+        llm_backend: str = "ollama",
+        llm_model: str = None,
+        api_key: str = None,
+        enable_llm_fallback_chat: bool = True,
+    ):
         self.llm = LLMInterface(backend=llm_backend, model=llm_model, api_key=api_key)
         self.conversation = ConversationManager()
         self.plotter = PlottingTools()
-        
-        # Current data context
+
+        self.enable_llm_fallback_chat = enable_llm_fallback_chat
+
         self.current_data: Optional[pd.DataFrame] = None
         self.data_info: Dict[str, Any] = {}
         self.analysis_results: Dict[str, Any] = {}
-        
-        # Register available tools
-        self.tools = self._register_tools()
+
         self.tool_functions = self._register_tool_functions()
-    
+
+    # -----------------------------
+    # Data context
+    # -----------------------------
     def set_data_context(self, df: pd.DataFrame, data_info: Dict = None):
-        """
-        Set the current dataset context for analysis
-        
-        Args:
-            df: DataFrame to analyze
-            data_info: Additional information about the dataset
-        """
         self.current_data = df
         self.data_info = data_info or {}
-        
-        # Update conversation context
-        context = self._create_data_context_summary()
-        self.conversation.add_context(context)
-    
+        self.conversation.add_context(self._create_data_context_summary())
+
     def set_analysis_results(self, results: Dict[str, Any]):
-        """Set statistical analysis results"""
         self.analysis_results = results
-    
+
     def _create_data_context_summary(self) -> str:
-        """Create a summary of current data context"""
         if self.current_data is None:
             return "No data loaded yet."
-        
+
         df = self.current_data
-        summary_parts = [
-            f"Dataset loaded with {df.shape[0]} rows and {df.shape[1]} columns.",
-            f"\nColumns: {', '.join(df.columns.tolist())}",
+        parts = [
+            f"Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns.",
+            f"Columns: {', '.join(df.columns.tolist())}",
         ]
-        
-        # Add OK/KO distribution if available
-        if 'OK_KO_Label' in df.columns:
-            ok_count = (df['OK_KO_Label'] == 'OK').sum()
-            ko_count = (df['OK_KO_Label'] == 'KO').sum()
-            summary_parts.append(f"\nOK samples: {ok_count}, KO samples: {ko_count}")
-        
-        # Add numerical columns info
-        numerical_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        if numerical_cols:
-            summary_parts.append(f"\nNumerical features: {', '.join(numerical_cols)}")
-        
-        return "\n".join(summary_parts)
-    
+        if "OK_KO_Label" in df.columns:
+            ok_count = int((df["OK_KO_Label"] == "OK").sum())
+            ko_count = int((df["OK_KO_Label"] == "KO").sum())
+            parts.append(f"OK samples: {ok_count}, KO samples: {ko_count}")
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        if num_cols:
+            parts.append(f"Numerical columns: {', '.join(num_cols)}")
+        return "\n".join(parts)
+
+    # -----------------------------
+    # Public API
+    # -----------------------------
     def chat(self, user_message: str, stream: bool = False) -> Dict[str, Any]:
-        """
-        Process user message and generate response
-        
-        Args:
-            user_message: User's message/request
-            stream: Whether to stream the response
-            
-        Returns:
-            Dictionary with response and any generated plots
-        """
         if self.current_data is None:
             return {
-                'response': "⚠️ Please load a dataset first before asking questions.",
-                'plots': [],
-                'tool_calls': None
+                "response": "⚠️ Please load a dataset first.",
+                "plots": [],
+                "tool_calls": None,
+                "tool_results": [],
             }
-        
-        # Add user message to conversation
-        self.conversation.add_message('user', user_message)
-        
-        # First, try to detect intent and call tools directly (more reliable for Ollama)
+
+        self.conversation.add_message("user", user_message)
+
+        intent = self._parse_intent(user_message)
+
+        # If intent unknown -> optional LLM fallback (chat only, no numbers)
+        if intent["type"] == "unknown":
+            if self.enable_llm_fallback_chat:
+                return self._fallback_chat(user_message)
+            return {
+                "response": "⚠️ I couldn't understand the request. Try: 'mean and variance of Age', or 'plot histogram of Fare'.",
+                "plots": [],
+                "tool_calls": None,
+                "tool_results": [],
+            }
+
+        # Execute deterministic tool
+        tool_name = intent["tool"]
+        tool_args = intent.get("args", {})
+        tool_func = self.tool_functions.get(tool_name)
+
+        if not tool_func:
+            return {
+                "response": f"⚠️ Tool not found: {tool_name}",
+                "plots": [],
+                "tool_calls": None,
+                "tool_results": [],
+            }
+
+        result = tool_func(**tool_args)
+
+        # Hard stop: never ask LLM to “fix” a tool failure
+        if not result.get("success", False):
+            resp = result.get("message") or f"❌ Tool error: {result.get('error', 'Unknown error')}"
+            self.conversation.add_message("assistant", resp, {"tool_results": [result]})
+            return {
+                "response": resp,
+                "plots": [],
+                "tool_calls": None,
+                "tool_results": [result],
+            }
+
+        # Build final response from tool outputs (stable)
+        response = self._render_response_from_tool(result, intent)
+
         plots = []
-        tool_results = []
-        direct_tool_result = self._detect_and_execute_tools(user_message)
-        
-        if direct_tool_result:
-            tool_results = direct_tool_result.get('results', [])
-            plots = direct_tool_result.get('plots', [])
-            
-            # Generate natural language response about the tool execution
-            response_content = direct_tool_result.get('summary', '')
-        else:
-            # Fall back to LLM for general questions
-            messages = self.conversation.get_messages_for_llm()
-            llm_response = self.llm.generate(
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2000,
-                tools=None  # Don't use tool calling for Ollama
-            )
-            
-            # Check for errors
-            if 'error' in llm_response:
-                error_msg = llm_response.get('content', 'Unknown error occurred')
-                self.conversation.add_message('assistant', error_msg)
-                return {
-                    'response': error_msg,
-                    'plots': [],
-                    'tool_calls': None,
-                    'error': llm_response['error']
-                }
-            
-            response_content = llm_response.get('content', '')
-        
-        # Add assistant response to conversation
-        self.conversation.add_message('assistant', response_content, {
-            'tool_results': tool_results
-        })
-        
+        if result.get("plot") is not None:
+            plots.append(result["plot"])
+
+        self.conversation.add_message("assistant", response, {"tool_results": [result]})
         return {
-            'response': response_content,
-            'plots': plots,
-            'tool_calls': None,
-            'tool_results': tool_results
+            "response": response,
+            "plots": plots,
+            "tool_calls": None,
+            "tool_results": [result],
         }
-    
-    def _detect_and_execute_tools(self, user_message: str) -> Optional[Dict[str, Any]]:
-        """Detect intent from user message and execute appropriate tools directly"""
-        message_lower = user_message.lower()
-        plots = []
-        results = []
-        summary_parts = []
-        
-        # Extract column names from message
-        columns = [col for col in self.current_data.columns if col.lower() in message_lower and col != 'OK_KO_Label']
-        
-        # Detect statistical summary requests (check first to prioritize over plotting)
-        stat_keywords = ['statistic', 'summary', 'mean', 'median', 'standard deviation', 
-                         'average', 'variance', 'std', 'deviation', 'count', 'max', 'min']
-        if any(word in message_lower for word in stat_keywords):
-            # Check if asking for specific column statistics
-            result = self._tool_get_statistical_summary(columns if columns else None, group_by_ok_ko=True)
-            results.append(result)
-            summary_parts.append(result.get('message', 'Statistical summary generated'))
-        
-        # Detect plot requests
-        elif any(word in message_lower for word in ['plot', 'show', 'display', 'visualize', 'draw', 'compare', 'distribution']):
-            if columns:
-                # Determine plot type
-                plot_type = 'histogram'  # default
-                if 'boxplot' in message_lower or 'box plot' in message_lower:
-                    plot_type = 'boxplot'
-                elif 'violin' in message_lower:
-                    plot_type = 'violin'
-                elif 'kde' in message_lower or 'density' in message_lower:
-                    plot_type = 'kde'
-                
-                result = self._tool_plot_distribution(columns[0], plot_type=plot_type)
-                results.append(result)
-                if result.get('plot'):
-                    plots.append(result['plot'])
-                    summary_parts.append(f"📊 Distribution comparison for **{columns[0]}** between OK and KO groups")
-            
-            # Multiple feature comparison
-            elif 'compare' in message_lower and len(columns) > 1:
-                result = self._tool_compare_features(columns)
-                results.append(result)
-                if result.get('plot'):
-                    plots.append(result['plot'])
-                    summary_parts.append(f"📊 Comparison of {len(columns)} features")
-        
-        # Detect feature importance requests
-        elif any(word in message_lower for word in ['important', 'feature importance', 'ranking', 'top feature', 'which feature']):
-            result = self._tool_get_feature_importance(top_n=10)
-            results.append(result)
-            summary_parts.append(result.get('message', 'Feature importance retrieved'))
-        
-        if results:
+
+    # -----------------------------
+    # Intent parsing (deterministic)
+    # -----------------------------
+    def _match_columns(self, message: str) -> List[str]:
+        """Word-boundary match to avoid substring false positives."""
+        assert self.current_data is not None
+        text = message.lower()
+        matched = []
+        for col in self.current_data.columns:
+            col_l = str(col).lower()
+            if re.search(r"\b" + re.escape(col_l) + r"\b", text):
+                matched.append(col)
+        return matched
+
+    def _extract_metrics(self, text: str) -> Optional[List[str]]:
+        """Return a list of requested metrics or None meaning 'full summary'."""
+        metric_map = {
+            "mean": ["mean", "average", "avg"],
+            "median": ["median"],
+            "mode": ["mode"],
+            "std": ["std", "standard deviation", "deviation"],
+            "variance": ["variance", "var"],
+            "min": ["min", "minimum"],
+            "max": ["max", "maximum"],
+            "count": ["count"],
+        }
+        requested = []
+        for m, keys in metric_map.items():
+            if any(k in text for k in keys):
+                requested.append(m)
+
+        # If user says summary/statistics and no explicit metrics -> full summary
+        if any(k in text for k in ["summary", "statistics", "statistical summary"]) and not requested:
+            return None
+
+        return sorted(set(requested)) if requested else None
+
+    def _parse_intent(self, user_message: str) -> Dict[str, Any]:
+        text = user_message.lower()
+        cols = self._match_columns(user_message)
+
+        # Feature importance (explicit)
+        if any(k in text for k in ["feature importance", "importance ranking", "rank features", "most important features"]):
+            return {"type": "tool", "tool": "get_feature_importance", "args": {"top_n": 10}}
+
+        # FFT / frequency spectrum
+        if "frequency" in text and ("spectrum" in text or "fft" in text):
+            if not cols:
+                return {"type": "unknown"}
+            return {"type": "tool", "tool": "plot_frequency_spectrum", "args": {"column": cols[0]}}
+
+        # Time series (explicit phrase only)
+        if "time series" in text or "timeseries" in text:
+            if not cols:
+                return {"type": "unknown"}
+            return {"type": "tool", "tool": "plot_time_series", "args": {"column": cols[0], "separate_groups": True}}
+
+        # Distribution plot: require explicit plot-type words (NOT just "show")
+        if any(k in text for k in ["histogram", "distribution", "boxplot", "box plot", "violin", "kde", "density"]):
+            if not cols:
+                return {"type": "unknown"}
+            plot_type = "histogram"
+            if "boxplot" in text or "box plot" in text:
+                plot_type = "boxplot"
+            elif "violin" in text:
+                plot_type = "violin"
+            elif "kde" in text or "density" in text:
+                plot_type = "kde"
+            return {"type": "tool", "tool": "plot_distribution", "args": {"column": cols[0], "plot_type": plot_type}}
+
+        # Statistics: detect numeric words
+        stat_words = ["mean", "median", "mode", "variance", "std", "standard deviation", "summary", "statistics", "min", "max", "count", "average"]
+        if any(w in text for w in stat_words):
+            metrics = self._extract_metrics(text)
             return {
-                'results': results,
-                'plots': plots,
-                'summary': '\n\n'.join(summary_parts) if summary_parts else 'Analysis complete'
+                "type": "tool",
+                "tool": "get_statistical_summary",
+                "args": {"columns": cols if cols else None, "group_by_ok_ko": True, "metrics": metrics},
             }
-        
-        return None
-    
-    def _execute_tool_call(self, tool_call: Dict) -> Dict[str, Any]:
-        """Execute a tool function call"""
-        try:
-            if tool_call['type'] == 'function':
-                func_name = tool_call['function']['name']
-                func_args_str = tool_call['function']['arguments']
-                
-                # Parse arguments
-                if isinstance(func_args_str, str):
-                    func_args = json.loads(func_args_str)
-                else:
-                    func_args = func_args_str
-                
-                # Get the tool function
-                if func_name not in self.tool_functions:
-                    return {
-                        'success': False,
-                        'message': f"Tool '{func_name}' not found",
-                        'error': 'unknown_tool'
-                    }
-                
-                # Execute the function
-                tool_func = self.tool_functions[func_name]
-                result = tool_func(**func_args)
-                
-                return result
-                
-        except Exception as e:
-            return {
-                'success': False,
-                'message': f"Error executing tool: {str(e)}",
-                'error': str(e)
-            }
-    
-    def _register_tools(self) -> List[Dict]:
-        """Register available tools for LLM"""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_statistical_summary",
-                    "description": "Get statistical summary (mean, median, mode, std, variance) for features. Compares OK vs KO groups.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "columns": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "List of column names to analyze. If empty, analyze all numerical columns."
-                            },
-                            "group_by_ok_ko": {
-                                "type": "boolean",
-                                "description": "Whether to split analysis by OK/KO groups"
-                            }
-                        },
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "plot_distribution",
-                    "description": "Plot distribution comparison between OK and KO groups. Supports histogram, boxplot, violin plot, and KDE.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "column": {
-                                "type": "string",
-                                "description": "Column name to plot"
-                            },
-                            "plot_type": {
-                                "type": "string",
-                                "enum": ["histogram", "kde", "boxplot", "violin"],
-                                "description": "Type of distribution plot"
-                            }
-                        },
-                        "required": ["column"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_feature_importance",
-                    "description": "Get feature importance ranking showing which features best discriminate between OK and KO.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "top_n": {
-                                "type": "integer",
-                                "description": "Number of top features to return (default 10)"
-                            }
-                        },
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "compare_features",
-                    "description": "Compare multiple features side by side between OK and KO groups.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "columns": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "List of column names to compare"
-                            }
-                        },
-                        "required": ["columns"]
-                    }
-                }
-            }
-        ]
-    
+
+        # Compare multiple features (explicit)
+        if "compare" in text and len(cols) >= 2:
+            return {"type": "tool", "tool": "compare_features", "args": {"columns": cols[:6]}}
+
+        return {"type": "unknown"}
+
+    # -----------------------------
+    # Rendering (NO LLM NUMBERS)
+    # -----------------------------
+    def _render_response_from_tool(self, tool_result: Dict[str, Any], intent: Dict[str, Any]) -> str:
+        """
+        Construct final response ONLY using fields returned by the tool:
+        - tool_result['message'] (human-readable)
+        - tool_result['data'] (structured)
+        - tool_result['summary'] (structured explanation for plots)
+        """
+        parts = []
+
+        # Always include tool message (already deterministic)
+        if tool_result.get("message"):
+            parts.append(tool_result["message"].strip())
+
+        # If plot tool returned summary -> generate stable explanation
+        summary = tool_result.get("summary")
+        if isinstance(summary, dict) and summary:
+            parts.append("\n---\n")
+            parts.append(self._explain_plot_summary(summary))
+
+        # Include warnings if any
+        if tool_result.get("warning"):
+            parts.append(f"\n⚠️ {tool_result['warning']}")
+
+        return "\n".join([p for p in parts if p]).strip()
+
+    def _explain_plot_summary(self, summary: Dict[str, Any]) -> str:
+        """
+        Template explanation. No invented numbers.
+        Expect plotter to provide summary fields.
+        """
+        plot_type = summary.get("plot_type", "plot")
+        column = summary.get("column", "feature")
+
+        lines = [f"🧾 **Plot Interpretation (from tool summary)**", f"- Plot type: **{plot_type}**", f"- Column: **{column}**"]
+
+        # Optional keys depending on plot type
+        if "group_stats" in summary:
+            # e.g., {"OK": {"mean":..., "std":...}, "KO": {...}}
+            gs = summary["group_stats"]
+            for g, st in gs.items():
+                lines.append(f"- {g} stats: {st}")
+
+        if "dominant_frequencies" in summary:
+            # e.g., {"OK": [(freq, magnitude), ...], "KO": ...}
+            dfreq = summary["dominant_frequencies"]
+            lines.append("- Dominant frequencies (top peaks):")
+            for g, peaks in dfreq.items():
+                lines.append(f"  - {g}: {peaks}")
+
+        if summary.get("note"):
+            lines.append(f"- Note: {summary['note']}")
+
+        return "\n".join(lines)
+
+    # -----------------------------
+    # LLM fallback chat (no numbers)
+    # -----------------------------
+    def _fallback_chat(self, user_message: str) -> Dict[str, Any]:
+        messages = self.conversation.get_messages_for_llm()
+
+        # HARD safety prompt: forbid numerical claims
+        system_prompt = (
+            "You are a helpful assistant. "
+            "Do NOT compute or invent any numeric results. "
+            "If user asks for statistics or plots, instruct them how to ask using tool keywords "
+            "like: 'mean variance Age', 'histogram Fare', 'fft Sensor1'."
+        )
+        messages.append({"role": "system", "content": system_prompt})
+
+        llm_response = self.llm.generate(messages=messages, temperature=0.6, max_tokens=500, tools=None)
+        content = (llm_response.get("content") or "").strip()
+
+        if not content:
+            content = "I couldn't parse that. Try: 'mean and variance of Age', or 'plot histogram of Fare'."
+
+        self.conversation.add_message("assistant", content)
+        return {"response": content, "plots": [], "tool_calls": None, "tool_results": []}
+
+    # -----------------------------
+    # Tool registration
+    # -----------------------------
     def _register_tool_functions(self) -> Dict[str, Callable]:
-        """Map tool names to actual Python functions"""
         return {
-            'get_statistical_summary': self._tool_get_statistical_summary,
-            'plot_time_series': self._tool_plot_time_series,
-            'plot_frequency_spectrum': self._tool_plot_frequency_spectrum,
-            'plot_distribution': self._tool_plot_distribution,
-            'get_feature_importance': self._tool_get_feature_importance,
-            'compare_features': self._tool_compare_features
+            "get_statistical_summary": self._tool_get_statistical_summary,
+            "plot_time_series": self._tool_plot_time_series,
+            "plot_frequency_spectrum": self._tool_plot_frequency_spectrum,
+            "plot_distribution": self._tool_plot_distribution,
+            "get_feature_importance": self._tool_get_feature_importance,
+            "compare_features": self._tool_compare_features,
         }
-    
-    # Tool function implementations
-    
-    def _tool_get_statistical_summary(self, columns: List[str] = None, 
-                                     group_by_ok_ko: bool = True) -> Dict[str, Any]:
-        """Get statistical summary"""
+
+    # -----------------------------
+    # Tools (deterministic)
+    # -----------------------------
+    def _tool_get_statistical_summary(
+        self,
+        columns: List[str] = None,
+        group_by_ok_ko: bool = True,
+        metrics: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         df = self.current_data
-        
+        assert df is not None
+
         if columns is None or len(columns) == 0:
             columns = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        # Remove OK_KO_Label from analysis
-        columns = [c for c in columns if c in df.columns and c != 'OK_KO_Label']
-        
+
+        columns = [c for c in columns if c in df.columns and c != "OK_KO_Label"]
         if not columns:
-            return {'success': False, 'message': 'No valid numerical columns found'}
-        
-        summary = {}
-        
-        if group_by_ok_ko and 'OK_KO_Label' in df.columns:
+            return {"success": False, "message": "⚠️ No valid numerical columns found.", "data": {}}
+
+        allowed = {"count", "mean", "median", "mode", "std", "variance", "min", "max"}
+        if metrics is not None:
+            metrics = [m for m in metrics if m in allowed]
+            if not metrics:
+                metrics = None  # full summary
+
+        def calc(series: pd.Series) -> Dict[str, Any]:
+            s = series.dropna()
+            out: Dict[str, Any] = {}
+            if metrics is None or "count" in metrics:
+                out["count"] = int(s.shape[0])
+            if metrics is None or "mean" in metrics:
+                out["mean"] = float(s.mean()) if len(s) else None
+            if metrics is None or "median" in metrics:
+                out["median"] = float(s.median()) if len(s) else None
+            if metrics is None or "mode" in metrics:
+                md = s.mode()
+                out["mode"] = float(md.iloc[0]) if (len(md) and pd.notna(md.iloc[0])) else None
+            if metrics is None or "std" in metrics:
+                out["std"] = float(s.std()) if len(s) else None
+            if metrics is None or "variance" in metrics:
+                out["variance"] = float(s.var()) if len(s) else None
+            if metrics is None or "min" in metrics:
+                out["min"] = float(s.min()) if len(s) else None
+            if metrics is None or "max" in metrics:
+                out["max"] = float(s.max()) if len(s) else None
+            return out
+
+        summary: Dict[str, Any] = {}
+        if group_by_ok_ko and "OK_KO_Label" in df.columns:
             for col in columns:
-                ok_data = df[df['OK_KO_Label'] == 'OK'][col].dropna()
-                ko_data = df[df['OK_KO_Label'] == 'KO'][col].dropna()
-                
                 summary[col] = {
-                    'OK': {
-                        'mean': float(ok_data.mean()),
-                        'median': float(ok_data.median()),
-                        'std': float(ok_data.std()),
-                        'variance': float(ok_data.var()),
-                        'min': float(ok_data.min()),
-                        'max': float(ok_data.max())
-                    },
-                    'KO': {
-                        'mean': float(ko_data.mean()),
-                        'median': float(ko_data.median()),
-                        'std': float(ko_data.std()),
-                        'variance': float(ko_data.var()),
-                        'min': float(ko_data.min()),
-                        'max': float(ko_data.max())
-                    }
+                    "OK": calc(df.loc[df["OK_KO_Label"] == "OK", col]),
+                    "KO": calc(df.loc[df["OK_KO_Label"] == "KO", col]),
                 }
         else:
             for col in columns:
-                data = df[col].dropna()
-                summary[col] = {
-                    'mean': float(data.mean()),
-                    'median': float(data.median()),
-                    'std': float(data.std()),
-                    'variance': float(data.var()),
-                    'min': float(data.min()),
-                    'max': float(data.max())
-                }
-        
-        # Format message
-        message = "📊 Statistical Summary:\n\n"
-        for col, stats in summary.items():
-            message += f"**{col}:**\n"
-            if 'OK' in stats:
-                message += f"  OK - Mean: {stats['OK']['mean']:.3f}, Median: {stats['OK']['median']:.3f}, Std: {stats['OK']['std']:.3f}\n"
-                message += f"  KO - Mean: {stats['KO']['mean']:.3f}, Median: {stats['KO']['median']:.3f}, Std: {stats['KO']['std']:.3f}\n"
+                summary[col] = calc(df[col])
+
+        metric_line = ", ".join(metrics) if metrics else "count, mean, median, mode, std, variance, min, max"
+        msg = [f"📊 **Statistical Summary** (metrics: {metric_line})\n"]
+        for col, st in summary.items():
+            msg.append(f"### {col}")
+            if isinstance(st, dict) and "OK" in st and "KO" in st:
+                msg.append(f"- OK: {st['OK']}")
+                msg.append(f"- KO: {st['KO']}")
             else:
-                message += f"  Mean: {stats['mean']:.3f}, Median: {stats['median']:.3f}, Std: {stats['std']:.3f}\n"
-        
-        return {
-            'success': True,
-            'message': message,
-            'data': summary
-        }
-    
+                msg.append(f"- {st}")
+            msg.append("")
+
+        return {"success": True, "message": "\n".join(msg).strip(), "data": summary}
+
     def _tool_plot_time_series(self, column: str, separate_groups: bool = True) -> Dict[str, Any]:
-        """Plot time series"""
-        result = self.plotter.plot_time_series(
-            self.current_data,
-            column=column,
-            separate_groups=separate_groups
-        )
-        
-        if result.get('success'):
-            return {
-                'success': True,
-                'message': f"✅ Generated time series plot for {column}",
-                'plot': result['figure']
-            }
-        else:
-            return {
-                'success': False,
-                'message': f"❌ Error: {result.get('error')}"
-            }
-    
-    def _tool_plot_frequency_spectrum(self, column: str, sampling_rate: float = 1.0) -> Dict[str, Any]:
-        """Plot frequency spectrum"""
-        result = self.plotter.plot_frequency_spectrum(
-            self.current_data,
-            column=column,
-            sampling_rate=sampling_rate
-        )
-        
-        if result.get('success'):
-            return {
-                'success': True,
-                'message': f"✅ Generated frequency spectrum plot for {column}",
-                'plot': result['figure']
-            }
-        else:
-            return {
-                'success': False,
-                'message': f"❌ Error: {result.get('error')}"
-            }
-    
-    def _tool_plot_distribution(self, column: str, plot_type: str = 'histogram') -> Dict[str, Any]:
-        """Plot distribution comparison"""
-        result = self.plotter.plot_distribution_comparison(
-            self.current_data,
-            column=column,
-            plot_type=plot_type
-        )
-        
-        if result.get('success'):
-            return {
-                'success': True,
-                'message': f"✅ Generated distribution plot for {column}",
-                'plot': result['figure']
-            }
-        else:
-            return {
-                'success': False,
-                'message': f"❌ Error: {result.get('error')}"
-            }
-    
-    def _tool_get_feature_importance(self, top_n: int = 10) -> Dict[str, Any]:
-        """Get feature importance from analysis results"""
-        import os
-        import pandas as pd
-        
-        # Try to get from analysis_results first
-        if self.analysis_results and 'feature_importance' in self.analysis_results:
-            feature_imp_data = self.analysis_results['feature_importance']
-            # Check if it has nested structure or direct feature_ranking
-            if isinstance(feature_imp_data, dict):
-                if 'feature_ranking' in feature_imp_data:
-                    ranking = feature_imp_data['feature_ranking'][:top_n]
-                elif 'feature_importance' in feature_imp_data and 'feature_ranking' in feature_imp_data['feature_importance']:
-                    ranking = feature_imp_data['feature_importance']['feature_ranking'][:top_n]
-                else:
-                    # Fallback to CSV
-                    ranking = None
-            else:
-                ranking = None
-        else:
-            ranking = None
-        
-        # If no ranking from analysis_results, try CSV file
-        if ranking is None:
-            # Try to read from CSV file as fallback
-            csv_path = 'data/processed/feature_importance.csv'
-            if os.path.exists(csv_path):
-                try:
-                    # First column is the feature name (as index)
-                    df = pd.read_csv(csv_path, index_col=0)
-                    df = df.reset_index()  # Convert index to column
-                    df.columns = ['feature'] + list(df.columns[1:])  # Rename first column
-                    ranking = []
-                    for idx, row in df.head(top_n).iterrows():
-                        ranking.append({
-                            'rank': idx + 1,
-                            'feature': row['feature'],
-                            'importance': row['importance']
-                        })
-                except Exception as e:
-                    return {
-                        'success': False,
-                        'message': f'⚠️ Error reading feature importance: {str(e)}'
-                    }
-            else:
-                return {
-                    'success': False,
-                    'message': '⚠️ Feature importance analysis not available. Please run feature importance analysis first in Tab 4 (Advanced Analysis).'
-                }
-        
-        message = f"🎯 Top {len(ranking)} Important Features:\n\n"
-        for item in ranking:
-            message += f"{item['rank']}. **{item['feature']}** - Importance: {item['importance']:.4f}\n"
-        
+        df = self.current_data
+        assert df is not None
+        res = self.plotter.plot_time_series(df, column=column, separate_groups=separate_groups)
+
+        if not res.get("success", False):
+            return {"success": False, "message": f"❌ {res.get('error', 'Time series failed')}"}
+
+        # IMPORTANT: plotter should return summary for interpretation
+        # TODO in plotter: return {"summary": {...}} with group stats or trend info
         return {
-            'success': True,
-            'message': message,
-            'data': ranking
+            "success": True,
+            "message": f"✅ Generated time series plot for **{column}**",
+            "plot": res["figure"],
+            "warning": res.get("warning"),
+            "summary": res.get("summary", {"plot_type": "time_series", "column": column, "note": res.get("warning")}),
         }
-    
+
+    def _tool_plot_frequency_spectrum(self, column: str, sampling_rate: float = 1.0) -> Dict[str, Any]:
+        df = self.current_data
+        assert df is not None
+        res = self.plotter.plot_frequency_spectrum(df, column=column, sampling_rate=sampling_rate)
+
+        if not res.get("success", False):
+            return {"success": False, "message": f"❌ {res.get('error', 'FFT failed')}"}
+
+        return {
+            "success": True,
+            "message": f"✅ Generated frequency spectrum (FFT) plot for **{column}**",
+            "plot": res["figure"],
+            "summary": res.get("summary", {"plot_type": "frequency_spectrum", "column": column}),
+        }
+
+    def _tool_plot_distribution(self, column: str, plot_type: str = "histogram") -> Dict[str, Any]:
+        df = self.current_data
+        assert df is not None
+        res = self.plotter.plot_distribution_comparison(df, column=column, plot_type=plot_type)
+
+        if not res.get("success", False):
+            return {"success": False, "message": f"❌ {res.get('error', 'Distribution plot failed')}"}
+
+        return {
+            "success": True,
+            "message": f"✅ Generated **{plot_type}** distribution plot for **{column}**",
+            "plot": res["figure"],
+            "summary": res.get("summary", {"plot_type": f"distribution_{plot_type}", "column": column}),
+        }
+
     def _tool_compare_features(self, columns: List[str]) -> Dict[str, Any]:
-        """Compare multiple features"""
-        result = self.plotter.plot_feature_comparison(
-            self.current_data,
-            columns=columns
-        )
-        
-        if result.get('success'):
-            return {
-                'success': True,
-                'message': f"✅ Generated comparison plot for {len(columns)} features",
-                'plot': result['figure']
-            }
-        else:
-            return {
-                'success': False,
-                'message': f"❌ Error: {result.get('error')}"
-            }
-    
-    def clear_conversation(self):
-        """Clear conversation history"""
-        self.conversation.clear_history()
-    
-    def get_conversation_history(self) -> List[Dict[str, Any]]:
-        """Get full conversation history"""
-        return self.conversation.get_full_history()
+        df = self.current_data
+        assert df is not None
+        res = self.plotter.plot_feature_comparison(df, columns=columns)
+
+        if not res.get("success", False):
+            return {"success": False, "message": f"❌ {res.get('error', 'Comparison plot failed')}"}
+
+        return {
+            "success": True,
+            "message": f"✅ Generated feature comparison plot for: {', '.join(res.get('columns', columns))}",
+            "plot": res["figure"],
+            "summary": res.get("summary", {"plot_type": "feature_comparison", "column": ",".join(columns)}),
+        }
+
+    def _tool_get_feature_importance(self, top_n: int = 10) -> Dict[str, Any]:
+        """
+        Read feature_importance.csv robustly, always output feature names + importance.
+        """
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            csv_path = os.path.join(base_dir, "data", "processed", "feature_importance.csv")
+
+            if not os.path.exists(csv_path):
+                return {"success": False, "message": "⚠️ feature_importance.csv not found. Run AutoML first."}
+
+            # Read CSV
+            try:
+                imp = pd.read_csv(csv_path)
+            except Exception:
+                imp = pd.read_csv(csv_path, header=None)
+
+            # Normalize columns
+            # Try common formats:
+            # (A) columns: feature, importance
+            if set(["feature", "importance"]).issubset(set(imp.columns)):
+                df = imp[["feature", "importance"]].copy()
+            else:
+                # (B) first two columns are feature & importance (may be swapped)
+                df = imp.iloc[:, :2].copy()
+                df.columns = ["c0", "c1"]
+
+                # Decide which is feature by dtype: feature tends to be non-numeric
+                c0_num = pd.to_numeric(df["c0"], errors="coerce").notna().mean()
+                c1_num = pd.to_numeric(df["c1"], errors="coerce").notna().mean()
+
+                if c0_num < c1_num:
+                    df = df.rename(columns={"c0": "feature", "c1": "importance"})
+                else:
+                    df = df.rename(columns={"c1": "feature", "c0": "importance"})
+
+            df["feature"] = df["feature"].astype(str)
+            df["importance"] = pd.to_numeric(df["importance"], errors="coerce")
+            df = df.dropna(subset=["importance"])
+            df = df.sort_values("importance", ascending=False).reset_index(drop=True)
+
+            ranking = []
+            for rank_i, row in enumerate(df.head(top_n).itertuples(index=False), start=1):
+                ranking.append({"rank": rank_i, "feature": str(row.feature), "importance": float(row.importance)})
+
+            if not ranking:
+                return {"success": False, "message": "⚠️ No valid feature importance rows found."}
+
+            msg = ["🎯 **Top Important Features**\n"]
+            for r in ranking:
+                msg.append(f"{r['rank']}. **{r['feature']}** — {r['importance']:.6f}")
+            return {"success": True, "message": "\n".join(msg).strip(), "data": {"feature_importance": ranking}}
+
+        except Exception as e:
+            return {"success": False, "message": f"⚠️ Error reading feature importance: {str(e)}"}

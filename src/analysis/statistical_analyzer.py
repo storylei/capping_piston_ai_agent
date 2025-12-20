@@ -163,10 +163,15 @@ class StatisticalAnalyzer:
     
     def _calculate_basic_stats(self, values: pd.Series) -> Dict[str, float]:
         """Calculate basic statistical measures"""
+        # Calculate mode (handle case where mode might have multiple values)
+        mode_result = values.mode()
+        mode_value = float(mode_result.iloc[0]) if not mode_result.empty else np.nan
+        
         return {
             'count': len(values),
             'mean': float(values.mean()),
             'median': float(values.median()),
+            'mode': mode_value,
             'std': float(values.std()),
             'var': float(values.var()),
             'min': float(values.min()),

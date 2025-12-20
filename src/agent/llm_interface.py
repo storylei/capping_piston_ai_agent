@@ -28,7 +28,7 @@ class LLMInterface:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         
         if self.backend == "ollama":
-            self.model = model or "llama3"
+            self.model = model or "llama3:latest"
             self.base_url = "http://localhost:11434"
             self._check_ollama_available()
         elif self.backend == "openai":
