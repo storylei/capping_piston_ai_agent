@@ -35,16 +35,21 @@ if 'agent' not in st.session_state:
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
-def load_data_with_loader(filename):
-    """Load data using DataLoader"""
+def load_data_with_loader(filename, rul_threshold=30):
+    """Load data using DataLoader - supports CSV and C-MAPSS txt files"""
     try:
         loader = DataLoader()
-        df = loader.load_csv(filename)
+        # Use universal loader that auto-detects file type
+        df = loader.load_file(filename, rul_threshold=rul_threshold)
         st.success(f"✅ Successfully loaded: {filename} ({df.shape[0]} rows × {df.shape[1]} cols)")
         return df
     except Exception as e:
         st.error(f"Failed to load data: {str(e)}")
         return pd.DataFrame()
+
+def is_cmapss_file(filename):
+    """Check if file is a C-MAPSS dataset file"""
+    return filename.startswith('train_FD') and filename.endswith('.txt')
 
 def load_default_data():
     """Load default dataset or let user choose"""
@@ -52,7 +57,7 @@ def load_default_data():
     available_datasets = loader.get_available_datasets()
     
     if not available_datasets:
-        st.error("No CSV files found in data/raw/ directory")
+        st.error("No data files found in data/raw/ directory")
         return pd.DataFrame()
     
     # Initialize session state for selected file
@@ -60,6 +65,8 @@ def load_default_data():
         st.session_state.selected_file = available_datasets[0]
     if 'current_data' not in st.session_state:
         st.session_state.current_data = pd.DataFrame()
+    if 'rul_threshold' not in st.session_state:
+        st.session_state.rul_threshold = 30
     
     # Let user choose dataset in sidebar
     with st.sidebar:
@@ -67,22 +74,56 @@ def load_default_data():
         selected_file = st.selectbox(
             "Choose Dataset:", 
             available_datasets,
-            help="Select a CSV file from data/raw/ directory",
+            help="Select a data file from data/raw/ directory (CSV or C-MAPSS txt)",
             key="dataset_selector"
         )
+        
+        # C-MAPSS specific settings
+        if is_cmapss_file(selected_file):
+            st.markdown("---")
+            st.subheader("🛩️ C-MAPSS Settings")
+            st.info("NASA Turbofan Engine Degradation Dataset detected")
+            
+            rul_threshold = st.slider(
+                "RUL Threshold (cycles):",
+                min_value=10,
+                max_value=100,
+                value=st.session_state.rul_threshold,
+                help="Samples with RUL ≤ threshold are labeled as KO (degrading/failing)"
+            )
+            st.session_state.rul_threshold = rul_threshold
+            
+            st.caption(f"• **OK**: RUL > {rul_threshold} cycles (healthy)")
+            st.caption(f"• **KO**: RUL ≤ {rul_threshold} cycles (degrading)")
         
         # Load data when file changes or button clicked
         if (selected_file != st.session_state.selected_file) or st.button("🔄 Load Data", key="load_data_btn"):
             st.session_state.selected_file = selected_file
-            st.session_state.current_data = load_data_with_loader(selected_file)
+            st.session_state.current_data = load_data_with_loader(
+                selected_file, 
+                rul_threshold=st.session_state.rul_threshold
+            )
             # Clear preprocessing state when new data is loaded
-            for key in ['label_col', 'ok_values', 'ko_values', 'processed_df', 'preprocessing_summary']:
+            for key in ['label_col', 'ok_values', 'ko_values', 'processed_df', 'preprocessing_summary', 'analysis_results']:
                 if key in st.session_state:
                     del st.session_state[key]
+            
+            # For C-MAPSS data, auto-set the processed_df since OK/KO labels are already created
+            if is_cmapss_file(selected_file) and not st.session_state.current_data.empty:
+                st.session_state.processed_df = st.session_state.current_data.copy()
+                st.session_state.label_col = 'OK_KO_Label'
+                st.success("✅ C-MAPSS data loaded with auto-generated OK/KO labels based on RUL!")
     
     # Return current data
     if st.session_state.current_data.empty:
-        st.session_state.current_data = load_data_with_loader(st.session_state.selected_file)
+        st.session_state.current_data = load_data_with_loader(
+            st.session_state.selected_file,
+            rul_threshold=st.session_state.rul_threshold
+        )
+        # Auto-set for C-MAPSS on first load
+        if is_cmapss_file(st.session_state.selected_file) and not st.session_state.current_data.empty:
+            st.session_state.processed_df = st.session_state.current_data.copy()
+            st.session_state.label_col = 'OK_KO_Label'
     
     return st.session_state.current_data
 
@@ -103,40 +144,52 @@ def display_sidebar(df):
                 st.error(f"❌ {msg}")
                 return
         
+        # Check if this is C-MAPSS data (already has OK/KO labels)
+        is_cmapss = is_cmapss_file(st.session_state.get('selected_file', ''))
+        
         # OK/KO Label Configuration
-        with st.expander("🏷️ OK/KO Label Configuration", expanded=True):
-            # Suggested label columns
-            suggested_cols = st.session_state.data_loader.suggest_label_columns(df)
-            if suggested_cols:
-                st.info(f"💡 Suggested label columns: {', '.join(suggested_cols)}")
-            
-            label_col = st.selectbox(
-                "Select Label Column:", 
-                options=df.columns,
-                help="Choose the column containing classification labels"
-            )
-            
-            if label_col:
-                unique_vals = df[label_col].dropna().unique().tolist()
-                st.write(f"Unique values in '{label_col}': {unique_vals}")
+        with st.expander("🏷️ OK/KO Label Configuration", expanded=not is_cmapss):
+            if is_cmapss and 'OK_KO_Label' in df.columns:
+                st.success("✅ C-MAPSS data: OK/KO labels auto-generated from RUL")
+                ok_count = (df['OK_KO_Label'] == 'OK').sum()
+                ko_count = (df['OK_KO_Label'] == 'KO').sum()
+                st.write(f"**OK samples**: {ok_count} ({ok_count/len(df)*100:.1f}%)")
+                st.write(f"**KO samples**: {ko_count} ({ko_count/len(df)*100:.1f}%)")
+                st.caption("💡 Adjust RUL threshold in Data Selection to change OK/KO distribution")
+            else:
+                # Manual configuration for non-C-MAPSS data
+                # Suggested label columns
+                suggested_cols = st.session_state.data_loader.suggest_label_columns(df)
+                if suggested_cols:
+                    st.info(f"💡 Suggested label columns: {', '.join(suggested_cols)}")
                 
-                # OK values selection (multi-select support)
-                ok_values = st.multiselect(
-                    "Select values as 'OK':",
-                    options=unique_vals,
-                    help="You can select multiple values as OK category"
+                label_col = st.selectbox(
+                    "Select Label Column:", 
+                    options=df.columns,
+                    help="Choose the column containing classification labels"
                 )
                 
-                if ok_values:
-                    ko_values = [v for v in unique_vals if v not in ok_values]
-                    st.write(f"**OK Category**: {ok_values}")
-                    st.write(f"**KO Category**: {ko_values}")
+                if label_col:
+                    unique_vals = df[label_col].dropna().unique().tolist()
+                    st.write(f"Unique values in '{label_col}': {unique_vals}")
                     
-                    if st.button("✅ Confirm OK/KO Configuration", key="confirm_okko"):
-                        st.session_state['label_col'] = label_col
-                        st.session_state['ok_values'] = ok_values
-                        st.session_state['ko_values'] = ko_values
-                        st.success("Configuration saved!")
+                    # OK values selection (multi-select support)
+                    ok_values = st.multiselect(
+                        "Select values as 'OK':",
+                        options=unique_vals,
+                        help="You can select multiple values as OK category"
+                    )
+                    
+                    if ok_values:
+                        ko_values = [v for v in unique_vals if v not in ok_values]
+                        st.write(f"**OK Category**: {ok_values}")
+                        st.write(f"**KO Category**: {ko_values}")
+                        
+                        if st.button("✅ Confirm OK/KO Configuration", key="confirm_okko"):
+                            st.session_state['label_col'] = label_col
+                            st.session_state['ok_values'] = ok_values
+                            st.session_state['ko_values'] = ko_values
+                            st.success("Configuration saved!")
         
         # Data Preprocessing Configuration
         if 'label_col' in st.session_state:
@@ -309,23 +362,16 @@ def display_data_section(df):
             # Select features to analyze - exclude non-meaningful numerical columns
             numerical_cols = processed_df.select_dtypes(include=['int64', 'float64']).columns.tolist()
             
-            # Define columns that should be excluded (IDs, categorical variables, etc.)
-            exclude_patterns = ['ticket', 'cabin', 'embarked', 'sex', 'name', 'passengerid']
-            
-            # Filter out columns that are IDs, encoded categoricals, or categorical variables
+            # Filter out columns that are likely IDs or have very low variance
             meaningful_numerical = []
             for col in numerical_cols:
                 if col == 'OK_KO_Label':
                     continue
-                # Skip columns matching exclude patterns
-                if any(pattern in col.lower() for pattern in exclude_patterns):
-                    continue
-                # Skip columns with very high cardinality (likely IDs)
+                # Skip columns with very high cardinality (likely IDs) - more than 90% unique values
                 if processed_df[col].nunique() > len(processed_df) * 0.9:
                     continue
-                # Skip columns with very few unique values (likely encoded categories)
-                # But keep Pclass-like features (1,2,3) which are actually ordinal
-                if processed_df[col].nunique() <= 3 and col.lower() not in ['pclass', 'sibsp', 'parch']:
+                # Skip columns with only 1 unique value (no variance)
+                if processed_df[col].nunique() <= 1:
                     continue
                 meaningful_numerical.append(col)
             
