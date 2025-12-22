@@ -187,17 +187,26 @@ class StatisticalAgent:
         if any(k in text for k in ["feature importance", "importance ranking", "rank features", "most important features"]):
             return {"type": "tool", "tool": "get_feature_importance", "args": {"top_n": 10}}
 
-        # FFT / frequency spectrum
-        if "frequency" in text and ("spectrum" in text or "fft" in text):
+        # FFT / frequency spectrum - support multiple ways to ask
+        # "fft", "frequency spectrum", "show fft for X", "plot frequency of X"
+        fft_keywords = ["fft", "frequency spectrum", "fourier", "spectrum"]
+        if any(k in text for k in fft_keywords):
             if not cols:
                 return {"type": "unknown"}
             return {"type": "tool", "tool": "plot_frequency_spectrum", "args": {"column": cols[0]}}
+
+        # Detect if user wants to filter by OK or KO group
+        filter_group = None
+        if " ok " in f" {text} " or "ok samples" in text or "ok group" in text or "for ok" in text:
+            filter_group = "OK"
+        elif " ko " in f" {text} " or "ko samples" in text or "ko group" in text or "for ko" in text:
+            filter_group = "KO"
 
         # Time series (explicit phrase only)
         if "time series" in text or "timeseries" in text:
             if not cols:
                 return {"type": "unknown"}
-            return {"type": "tool", "tool": "plot_time_series", "args": {"column": cols[0], "separate_groups": True}}
+            return {"type": "tool", "tool": "plot_time_series", "args": {"column": cols[0], "separate_groups": True, "filter_group": filter_group}}
 
         # Distribution plot: require explicit plot-type words (NOT just "show")
         if any(k in text for k in ["histogram", "distribution", "boxplot", "box plot", "violin", "kde", "density"]):
@@ -210,7 +219,7 @@ class StatisticalAgent:
                 plot_type = "violin"
             elif "kde" in text or "density" in text:
                 plot_type = "kde"
-            return {"type": "tool", "tool": "plot_distribution", "args": {"column": cols[0], "plot_type": plot_type}}
+            return {"type": "tool", "tool": "plot_distribution", "args": {"column": cols[0], "plot_type": plot_type, "filter_group": filter_group}}
 
         # Statistics: detect numeric words
         stat_words = ["mean", "median", "mode", "variance", "std", "standard deviation", "summary", "statistics", "min", "max", "count", "average"]
@@ -393,19 +402,26 @@ class StatisticalAgent:
 
         return {"success": True, "message": "\n".join(msg).strip(), "data": summary}
 
-    def _tool_plot_time_series(self, column: str, separate_groups: bool = True) -> Dict[str, Any]:
+    def _tool_plot_time_series(self, column: str, separate_groups: bool = True, filter_group: str = None) -> Dict[str, Any]:
         df = self.current_data
         assert df is not None
-        res = self.plotter.plot_time_series(df, column=column, separate_groups=separate_groups)
+        
+        # Filter by group if specified
+        plot_df = df
+        group_label = ""
+        if filter_group and "OK_KO_Label" in df.columns:
+            plot_df = df[df["OK_KO_Label"] == filter_group].copy()
+            group_label = f" ({filter_group} samples only)"
+            separate_groups = False  # No need to separate when already filtered
+        
+        res = self.plotter.plot_time_series(plot_df, column=column, separate_groups=separate_groups)
 
         if not res.get("success", False):
             return {"success": False, "message": f"❌ {res.get('error', 'Time series failed')}"}
 
-        # IMPORTANT: plotter should return summary for interpretation
-        # TODO in plotter: return {"summary": {...}} with group stats or trend info
         return {
             "success": True,
-            "message": f"✅ Generated time series plot for **{column}**",
+            "message": f"✅ Generated time series plot for **{column}**{group_label}",
             "plot": res["figure"],
             "warning": res.get("warning"),
             "summary": res.get("summary", {"plot_type": "time_series", "column": column, "note": res.get("warning")}),
@@ -426,17 +442,25 @@ class StatisticalAgent:
             "summary": res.get("summary", {"plot_type": "frequency_spectrum", "column": column}),
         }
 
-    def _tool_plot_distribution(self, column: str, plot_type: str = "histogram") -> Dict[str, Any]:
+    def _tool_plot_distribution(self, column: str, plot_type: str = "histogram", filter_group: str = None) -> Dict[str, Any]:
         df = self.current_data
         assert df is not None
-        res = self.plotter.plot_distribution_comparison(df, column=column, plot_type=plot_type)
+        
+        # Filter by group if specified
+        plot_df = df
+        group_label = ""
+        if filter_group and "OK_KO_Label" in df.columns:
+            plot_df = df[df["OK_KO_Label"] == filter_group].copy()
+            group_label = f" ({filter_group} samples only)"
+        
+        res = self.plotter.plot_distribution_comparison(plot_df, column=column, plot_type=plot_type)
 
         if not res.get("success", False):
             return {"success": False, "message": f"❌ {res.get('error', 'Distribution plot failed')}"}
 
         return {
             "success": True,
-            "message": f"✅ Generated **{plot_type}** distribution plot for **{column}**",
+            "message": f"✅ Generated **{plot_type}** distribution plot for **{column}**{group_label}",
             "plot": res["figure"],
             "summary": res.get("summary", {"plot_type": f"distribution_{plot_type}", "column": column}),
         }
@@ -458,48 +482,58 @@ class StatisticalAgent:
 
     def _tool_get_feature_importance(self, top_n: int = 10) -> Dict[str, Any]:
         """
-        Read feature_importance.csv robustly, always output feature names + importance.
+        Get feature importance from current analysis results or CSV file.
+        Prioritizes current session analysis results over saved CSV.
         """
         try:
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            csv_path = os.path.join(base_dir, "data", "processed", "feature_importance.csv")
-
-            if not os.path.exists(csv_path):
-                return {"success": False, "message": "⚠️ feature_importance.csv not found. Run AutoML first."}
-
-            # Read CSV
-            try:
-                imp = pd.read_csv(csv_path)
-            except Exception:
-                imp = pd.read_csv(csv_path, header=None)
-
-            # Normalize columns
-            # Try common formats:
-            # (A) columns: feature, importance
-            if set(["feature", "importance"]).issubset(set(imp.columns)):
-                df = imp[["feature", "importance"]].copy()
-            else:
-                # (B) first two columns are feature & importance (may be swapped)
-                df = imp.iloc[:, :2].copy()
-                df.columns = ["c0", "c1"]
-
-                # Decide which is feature by dtype: feature tends to be non-numeric
-                c0_num = pd.to_numeric(df["c0"], errors="coerce").notna().mean()
-                c1_num = pd.to_numeric(df["c1"], errors="coerce").notna().mean()
-
-                if c0_num < c1_num:
-                    df = df.rename(columns={"c0": "feature", "c1": "importance"})
-                else:
-                    df = df.rename(columns={"c1": "feature", "c0": "importance"})
-
-            df["feature"] = df["feature"].astype(str)
-            df["importance"] = pd.to_numeric(df["importance"], errors="coerce")
-            df = df.dropna(subset=["importance"])
-            df = df.sort_values("importance", ascending=False).reset_index(drop=True)
-
             ranking = []
-            for rank_i, row in enumerate(df.head(top_n).itertuples(index=False), start=1):
-                ranking.append({"rank": rank_i, "feature": str(row.feature), "importance": float(row.importance)})
+            
+            # Priority 1: Use current analysis results (from this session)
+            if self.analysis_results and 'feature_importance' in self.analysis_results:
+                fi = self.analysis_results.get('feature_importance', {})
+                feature_ranking = fi.get('feature_importance', {}).get('feature_ranking', [])
+                if feature_ranking:
+                    for item in feature_ranking[:top_n]:
+                        ranking.append({
+                            "rank": item.get('rank', len(ranking) + 1),
+                            "feature": str(item.get('feature', '')),
+                            "importance": float(item.get('importance', 0))
+                        })
+            
+            # Priority 2: Fall back to CSV file if no current results
+            if not ranking:
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                csv_path = os.path.join(base_dir, "data", "processed", "feature_importance.csv")
+
+                if not os.path.exists(csv_path):
+                    return {"success": False, "message": "⚠️ No feature importance data available. Please run Advanced Analysis first."}
+
+                # Read CSV
+                try:
+                    imp = pd.read_csv(csv_path)
+                except Exception:
+                    imp = pd.read_csv(csv_path, header=None)
+
+                # Normalize columns
+                if set(["feature", "importance"]).issubset(set(imp.columns)):
+                    df = imp[["feature", "importance"]].copy()
+                else:
+                    df = imp.iloc[:, :2].copy()
+                    df.columns = ["c0", "c1"]
+                    c0_num = pd.to_numeric(df["c0"], errors="coerce").notna().mean()
+                    c1_num = pd.to_numeric(df["c1"], errors="coerce").notna().mean()
+                    if c0_num < c1_num:
+                        df = df.rename(columns={"c0": "feature", "c1": "importance"})
+                    else:
+                        df = df.rename(columns={"c1": "feature", "c0": "importance"})
+
+                df["feature"] = df["feature"].astype(str)
+                df["importance"] = pd.to_numeric(df["importance"], errors="coerce")
+                df = df.dropna(subset=["importance"])
+                df = df.sort_values("importance", ascending=False).reset_index(drop=True)
+
+                for rank_i, row in enumerate(df.head(top_n).itertuples(index=False), start=1):
+                    ranking.append({"rank": rank_i, "feature": str(row.feature), "importance": float(row.importance)})
 
             if not ranking:
                 return {"success": False, "message": "⚠️ No valid feature importance rows found."}

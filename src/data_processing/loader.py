@@ -104,17 +104,20 @@ class DataLoader:
             # RUL is used to create OK_KO_Label, so it cannot be used as a feature
             df = df.drop(columns=['RUL'])
             
-            # Also drop unit_id and time_cycles as they are not meaningful features
-            # unit_id is just an identifier, time_cycles is an index
-            cols_to_drop = ['unit_id', 'time_cycles']
-            df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
+            # Drop unit_id as it's just an identifier
+            # Keep time_cycles for time-series visualization (but exclude from ML features)
+            df = df.drop(columns=['unit_id'])
+            
+            # Mark time_cycles as the time axis for plotting (metadata)
+            df.attrs['time_column'] = 'time_cycles'
+            df.attrs['exclude_from_ml'] = ['time_cycles']  # Exclude from ML analysis
             
             print(f"✅ Successfully loaded C-MAPSS data: {train_file}")
             print(f"Data shape: {df.shape}")
             print(f"RUL threshold for OK/KO: {rul_threshold} cycles")
             print(f"OK samples: {(df['OK_KO_Label'] == 'OK').sum()}")
             print(f"KO samples: {(df['OK_KO_Label'] == 'KO').sum()}")
-            print(f"ℹ️  Removed RUL, unit_id, time_cycles to prevent data leakage")
+            print(f"ℹ️  Removed RUL and unit_id; kept time_cycles for visualization")
             
             return df
             

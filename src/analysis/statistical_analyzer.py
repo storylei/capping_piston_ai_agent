@@ -50,6 +50,21 @@ class StatisticalAnalyzer:
         if target_col in categorical_cols:
             categorical_cols.remove(target_col)
         
+        # Exclude columns that should not be analyzed as features:
+        # 1. Columns marked in attrs (from data loader)
+        # 2. Common time/index columns that correlate with degradation but aren't real features
+        exclude_cols = set(df.attrs.get('exclude_from_ml', []))
+        # Also explicitly exclude common time index columns
+        time_index_patterns = ['time_cycles', 'time_cycle', 'cycle', 'timestamp', 'index']
+        for col in numerical_cols.copy():
+            col_lower = str(col).lower()
+            if col_lower in time_index_patterns or col in exclude_cols:
+                numerical_cols.remove(col)
+                print(f"ℹ️  Excluded '{col}' from statistical analysis (time/index column)")
+        for col in categorical_cols.copy():
+            if col in exclude_cols:
+                categorical_cols.remove(col)
+        
         results = {
             'summary': {
                 'total_samples': len(df),

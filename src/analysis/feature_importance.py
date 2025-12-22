@@ -48,11 +48,27 @@ class FeatureImportanceAnalyzer:
         if df.shape[0] == 0:
             raise ValueError("No valid data for analysis")
         
+        # Create a copy and exclude columns that shouldn't be ML features
+        df_ml = df.copy()
+        
+        # Get exclusion list from attrs + common time index columns
+        exclude_cols = set(df.attrs.get('exclude_from_ml', []))
+        time_index_patterns = ['time_cycles', 'time_cycle', 'cycle', 'timestamp', 'index']
+        for col in df_ml.columns:
+            if str(col).lower() in time_index_patterns:
+                exclude_cols.add(col)
+        
+        # Drop excluded columns
+        cols_to_drop = [c for c in exclude_cols if c in df_ml.columns and c != target_col]
+        if cols_to_drop:
+            df_ml = df_ml.drop(columns=cols_to_drop)
+            print(f"ℹ️  Excluded from ML analysis: {cols_to_drop}")
+        
         # Initialize results
         results = {
-            'feature_names': [col for col in df.columns if col != target_col],
-            'data_shape': df.shape,
-            'class_distribution': df[target_col].value_counts().to_dict(),
+            'feature_names': [col for col in df_ml.columns if col != target_col],
+            'data_shape': df_ml.shape,
+            'class_distribution': df_ml[target_col].value_counts().to_dict(),
             'feature_importance': None,
             'model_leaderboard': None,
             'best_model': None,
@@ -75,7 +91,7 @@ class FeatureImportanceAnalyzer:
             path=save_path,
             verbosity=2
         ).fit(
-            train_data=df,
+            train_data=df_ml,  # Use filtered DataFrame
             time_limit=time_limit,
             presets=preset
         )
@@ -86,7 +102,7 @@ class FeatureImportanceAnalyzer:
         
         # Get feature importance
         print("Computing feature importance...")
-        feature_importance_df = self.predictor.feature_importance(df)
+        feature_importance_df = self.predictor.feature_importance(df_ml)
         results['feature_importance'] = {
             'importance_scores': feature_importance_df.to_dict(),
             'feature_ranking': [
@@ -97,7 +113,7 @@ class FeatureImportanceAnalyzer:
         
         # Get model leaderboard
         print("Generating model leaderboard...")
-        leaderboard = self.predictor.leaderboard(df, silent=True)
+        leaderboard = self.predictor.leaderboard(df_ml, silent=True)
         results['model_leaderboard'] = leaderboard.to_dict('records')
         
         # Get best model info

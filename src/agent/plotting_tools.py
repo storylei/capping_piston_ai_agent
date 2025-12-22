@@ -38,7 +38,19 @@ class PlottingTools:
           1) DatetimeIndex
           2) datetime dtype column
           3) column name hints: time/date/timestamp/datetime + parseable
+          4) Check for C-MAPSS time_cycles column
         """
+        # 0) Check DataFrame attrs for marked time column (C-MAPSS)
+        time_col_attr = getattr(df, 'attrs', {}).get('time_column')
+        if time_col_attr and time_col_attr in df.columns:
+            return df[time_col_attr], f"Time Cycles ({time_col_attr})"
+        
+        # Also check for common cycle/time columns in industrial data
+        cycle_hints = ["time_cycles", "cycle", "cycles", "time_cycle"]
+        for c in df.columns:
+            if str(c).lower() in cycle_hints:
+                return df[c], f"Cycles ({c})"
+        
         # 1) DatetimeIndex
         if isinstance(df.index, pd.DatetimeIndex):
             return pd.Series(df.index), "Time (DatetimeIndex)"
@@ -99,11 +111,19 @@ class PlottingTools:
         }
 
     def _is_categorical(self, s: pd.Series) -> bool:
-        if s.dtype == "object":
+        """Check if a series should be treated as categorical.
+        
+        For numerical data, we should NOT treat it as categorical just because
+        of low unique count - sensor data often has repeated values.
+        """
+        # Only object/string types are categorical
+        if s.dtype == "object" or s.dtype.name == "category":
             return True
-        # small unique count also treated as categorical
-        nunique = s.nunique(dropna=True)
-        return bool(nunique < 10)
+        # Numeric types are NEVER categorical (sensors, measurements, etc.)
+        if pd.api.types.is_numeric_dtype(s):
+            return False
+        # Fallback for other types
+        return False
 
     # -----------------------------
     # Plot: Time Series
