@@ -32,12 +32,14 @@ class StatisticalAgent:
         llm_model: str = None,
         api_key: str = None,
         enable_llm_fallback_chat: bool = True,
+        enable_llm_interpretation: bool = False,
     ):
         self.llm = LLMInterface(backend=llm_backend, model=llm_model, api_key=api_key)
         self.conversation = ConversationManager()
         self.plotter = PlottingTools()
 
         self.enable_llm_fallback_chat = enable_llm_fallback_chat
+        self.enable_llm_interpretation = enable_llm_interpretation
 
         self.current_data: Optional[pd.DataFrame] = None
         self.data_info: Dict[str, Any] = {}
@@ -95,7 +97,7 @@ class StatisticalAgent:
             if self.enable_llm_fallback_chat:
                 return self._fallback_chat(user_message)
             return {
-                "response": "⚠️ I couldn't understand the request. Try: 'mean and variance of Age', or 'plot histogram of Fare'.",
+                "response": "⚠️ I couldn't understand the request. Try: 'mean and variance of sensor_2', or 'plot histogram of sensor_11'.",
                 "plots": [],
                 "tool_calls": None,
                 "tool_results": [],
@@ -246,6 +248,8 @@ class StatisticalAgent:
         - tool_result['message'] (human-readable)
         - tool_result['data'] (structured)
         - tool_result['summary'] (structured explanation for plots)
+        
+        Optionally uses LLM to interpret the results if enable_llm_interpretation is True.
         """
         parts = []
 
@@ -262,6 +266,15 @@ class StatisticalAgent:
         # Include warnings if any
         if tool_result.get("warning"):
             parts.append(f"\n⚠️ {tool_result['warning']}")
+        
+        # Optionally add LLM interpretation
+        if self.enable_llm_interpretation:
+            base_response = "\n".join([p for p in parts if p]).strip()
+            llm_interpretation = self._llm_interpret_result(tool_result, intent, base_response)
+            if llm_interpretation:
+                parts.append("\n---\n")
+                parts.append("🤖 **AI Analysis:**")
+                parts.append(llm_interpretation)
 
         return "\n".join([p for p in parts if p]).strip()
 
@@ -294,6 +307,63 @@ class StatisticalAgent:
 
         return "\n".join(lines)
 
+    def _llm_interpret_result(self, tool_result: Dict[str, Any], intent: Dict[str, Any], base_response: str) -> str:
+        """
+        Use LLM to provide intelligent interpretation of tool results.
+        The LLM receives the exact numbers from tools and explains their meaning.
+        """
+        try:
+            tool_name = intent.get("tool", "unknown")
+            
+            # Build context for LLM
+            context_parts = []
+            context_parts.append(f"Tool used: {tool_name}")
+            context_parts.append(f"Tool output:\n{base_response}")
+            
+            # Add structured data if available
+            if tool_result.get("data"):
+                context_parts.append(f"Structured data: {tool_result['data']}")
+            
+            context = "\n".join(context_parts)
+            
+            # Domain-specific interpretation prompt
+            interpretation_prompt = f"""You are an expert data analyst interpreting results from an industrial sensor analysis tool.
+
+The data is from NASA C-MAPSS turbofan engine degradation dataset:
+- OK = healthy engine (RUL > threshold)
+- KO = degraded engine (RUL <= threshold, approaching failure)
+- Sensors measure temperature, pressure, speed, etc.
+
+Here are the EXACT results from the analysis tool (DO NOT change any numbers):
+
+{context}
+
+Provide a brief (2-3 sentences) expert interpretation:
+1. What do these numbers mean in the context of engine health?
+2. Is there a significant difference between OK and KO groups?
+3. What actionable insight can be drawn?
+
+IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics."""
+
+            messages = [
+                {"role": "system", "content": "You are a predictive maintenance expert. Interpret analysis results concisely."},
+                {"role": "user", "content": interpretation_prompt}
+            ]
+            
+            llm_response = self.llm.generate(
+                messages=messages,
+                temperature=0.3,  # Low temperature for consistent interpretation
+                max_tokens=200,
+                tools=None
+            )
+            
+            interpretation = (llm_response.get("content") or "").strip()
+            return interpretation if interpretation else None
+            
+        except Exception as e:
+            # Silent fail - interpretation is optional
+            return None
+
     # -----------------------------
     # LLM fallback chat (no numbers)
     # -----------------------------
@@ -302,10 +372,10 @@ class StatisticalAgent:
 
         # HARD safety prompt: forbid numerical claims
         system_prompt = (
-            "You are a helpful assistant. "
+            "You are a helpful assistant for analyzing industrial sensor data (like NASA C-MAPSS turbofan engine data). "
             "Do NOT compute or invent any numeric results. "
             "If user asks for statistics or plots, instruct them how to ask using tool keywords "
-            "like: 'mean variance Age', 'histogram Fare', 'fft Sensor1'."
+            "like: 'mean variance sensor_2', 'histogram sensor_11', 'fft sensor_7', 'time series for KO samples'."
         )
         messages.append({"role": "system", "content": system_prompt})
 
@@ -313,7 +383,7 @@ class StatisticalAgent:
         content = (llm_response.get("content") or "").strip()
 
         if not content:
-            content = "I couldn't parse that. Try: 'mean and variance of Age', or 'plot histogram of Fare'."
+            content = "I couldn't parse that. Try: 'mean and variance of sensor_2', or 'plot histogram of sensor_11'."
 
         self.conversation.add_message("assistant", content)
         return {"response": content, "plots": [], "tool_calls": None, "tool_results": []}

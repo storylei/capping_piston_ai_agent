@@ -29,7 +29,15 @@ if 'agent' not in st.session_state:
     # Default to Ollama for local deployment (as per project requirements)
     backend = os.getenv("LLM_BACKEND", "ollama")
     api_key = os.getenv("OPENAI_API_KEY", None)
-    st.session_state.agent = StatisticalAgent(llm_backend=backend, api_key=api_key)
+    st.session_state.agent = StatisticalAgent(
+        llm_backend=backend, 
+        api_key=api_key,
+        enable_llm_interpretation=False  # Default off for faster responses
+    )
+
+# Initialize LLM interpretation setting
+if 'enable_llm_interpretation' not in st.session_state:
+    st.session_state.enable_llm_interpretation = False
 
 # Initialize chat history
 if 'chat_history' not in st.session_state:
@@ -670,10 +678,10 @@ def display_data_section(df):
                                 else:
                                     st.info("Feature importance analysis not yet completed")
                     
-                    # Consensus Features
-                    if summary.get('consensus_features'):
+                    # Consensus Features - ONLY show when Combined Analysis is selected
+                    if 'Combined Analysis' in analysis_types and summary.get('consensus_features'):
                         st.subheader("🎯 Consensus Features")
-                        st.write("Features that appear in both statistical and ML top rankings:")
+                        st.write("Features that appear in **both** statistical and ML top rankings:")
                         
                         consensus_features = summary['consensus_features']
                         for i, feature in enumerate(consensus_features, 1):
@@ -732,12 +740,29 @@ def display_data_section(df):
                     if api_key_input:
                         os.environ["OPENAI_API_KEY"] = api_key_input
                 
+                # LLM Interpretation Toggle
+                st.markdown("---")
+                enable_interpretation = st.checkbox(
+                    "🧠 Enable LLM Interpretation",
+                    value=st.session_state.enable_llm_interpretation,
+                    help="Let AI explain what the analysis results mean (slower but more insightful)"
+                )
+                
+                if enable_interpretation != st.session_state.enable_llm_interpretation:
+                    st.session_state.enable_llm_interpretation = enable_interpretation
+                    st.session_state.agent.enable_llm_interpretation = enable_interpretation
+                    if enable_interpretation:
+                        st.info("🤖 LLM will now interpret analysis results")
+                    else:
+                        st.info("⚡ Fast mode: Direct tool outputs only")
+                
                 # Update agent backend if changed
                 if st.button("🔄 Update Agent Backend"):
                     try:
                         st.session_state.agent = StatisticalAgent(
                             llm_backend=llm_backend,
-                            api_key=os.getenv("OPENAI_API_KEY")
+                            api_key=os.getenv("OPENAI_API_KEY"),
+                            enable_llm_interpretation=st.session_state.enable_llm_interpretation
                         )
                         st.success(f"✅ Agent backend updated to {llm_backend}")
                     except Exception as e:
@@ -767,17 +792,18 @@ def display_data_section(df):
             with col1:
                 st.markdown("""
                 **Statistical Analysis:**
-                - "Show me the statistical summary for all features"
-                - "What's the mean and std for Age in OK vs KO?"
+                - "Show statistical summary for sensor_2"
+                - "What's the mean and std for sensor_11?"
                 - "Get feature importance ranking"
                 """)
             
             with col2:
                 st.markdown("""
                 **Visualization:**
-                - "Show the distribution of Age"
-                - "Compare Fare between OK and KO groups"
-                - "Plot boxplot for Pclass"
+                - "Plot histogram of sensor_11"
+                - "Show time series for KO samples of sensor_2"
+                - "Plot FFT for sensor_7"
+                - "Show boxplot for sensor_4"
                 """)
             
             st.markdown("---")
