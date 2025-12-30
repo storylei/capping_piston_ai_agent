@@ -24,9 +24,17 @@ python3 -m pip install -r requirements.txt
 # Ensure proper ownership of user directories
 sudo chown -R ${USER}:${USER} /home/${USER}/.local
 
+# ===== Start Ollama Service =====
+# Start Ollama in background (for non-systemd environments like Codespaces)
+nohup ollama serve > /tmp/ollama.log 2>&1 &
+sleep 2  # Give Ollama time to start
+echo "✅ Ollama service started (background process)"
+
 # ===== Verification Output =====
 echo "=== Environment Setup Complete ==="
 echo "Git LFS Status:"
 git lfs env | grep "Git LFS initialized"
 echo "Python Environment:"
 python3 -c "import sys; print(f'Python Path: {sys.executable}')"
+echo "Ollama Status:"
+ollama --version || echo "⚠️  Ollama not yet ready, will start on demand"

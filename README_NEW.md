@@ -28,6 +28,27 @@
 2. Run installer
 3. Ollama service starts automatically
 
+**Linux (Codespaces/Docker):**
+1. Installation (Official Script):
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+2. Start service in non-systemd environment (like Codespaces) - run in background:
+```bash
+nohup ollama serve > /tmp/ollama.log 2>&1 &
+```
+3. Port Information: Ollama listens on port 11434 by default; Codespaces will automatically forward this port. You can confirm it in the "Ports" view.
+4. Verify Installation:
+```bash
+ollama --version
+ollama list
+```
+5. Pull Model (First Time Use):
+```bash
+ollama pull llama3
+```
+Note: The `llama3` model is approximately ~4.7GB. Please ensure Codespaces has sufficient available disk space.
+
 **Verify installation:**
 ```powershell
 ollama --version
