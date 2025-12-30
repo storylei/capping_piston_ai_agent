@@ -1,0 +1,1116 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+import os
+
+# Add src to Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from data_processing import DataLoader, DataPreprocessor
+from analysis import AnalysisEngine
+from agent import StatisticalAgent
+
+# Initialize app components
+st.set_page_config(page_title="Statistical AI Agent", layout="wide")
+
+# Initialize processors
+if 'data_loader' not in st.session_state:
+    st.session_state.data_loader = DataLoader()
+if 'data_preprocessor' not in st.session_state:
+    st.session_state.data_preprocessor = DataPreprocessor()
+if 'analysis_engine' not in st.session_state:
+    st.session_state.analysis_engine = AnalysisEngine()
+
+# Initialize AI Agent
+if 'agent' not in st.session_state:
+    # Default to Ollama for local deployment (as per project requirements)
+    backend = os.getenv("LLM_BACKEND", "ollama")
+    api_key = os.getenv("OPENAI_API_KEY", None)
+    st.session_state.agent = StatisticalAgent(
+        llm_backend=backend, 
+        api_key=api_key,
+        enable_llm_interpretation=False  # Default off for faster responses
+    )
+
+# Initialize LLM interpretation setting
+if 'enable_llm_interpretation' not in st.session_state:
+    st.session_state.enable_llm_interpretation = False
+
+# Initialize chat history
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+
+def load_data_with_loader(filename, rul_threshold=30):
+    """Load data using DataLoader - supports CSV and C-MAPSS txt files"""
+    try:
+        loader = DataLoader()
+        # Use universal loader that auto-detects file type
+        df = loader.load_file(filename, rul_threshold=rul_threshold)
+        st.success(f"✅ Successfully loaded: {filename} ({df.shape[0]} rows × {df.shape[1]} cols)")
+        return df
+    except Exception as e:
+        st.error(f"Failed to load data: {str(e)}")
+        return pd.DataFrame()
+
+def is_cmapss_file(filename):
+    """Check if file is a C-MAPSS dataset file"""
+    return filename.startswith('train_FD') and filename.endswith('.txt')
+
+def load_default_data():
+    """Load default dataset or let user choose"""
+    loader = DataLoader()
+    available_datasets = loader.get_available_datasets()
+    
+    if not available_datasets:
+        st.error("No data files found in data/raw/ directory")
+        return pd.DataFrame()
+    
+    # Initialize session state for selected file
+    if 'selected_file' not in st.session_state:
+        st.session_state.selected_file = available_datasets[0]
+    if 'current_data' not in st.session_state:
+        st.session_state.current_data = pd.DataFrame()
+    if 'rul_threshold' not in st.session_state:
+        st.session_state.rul_threshold = 30
+    
+    # Let user choose dataset in sidebar
+    with st.sidebar:
+        st.header("📁 Data Selection")
+        selected_file = st.selectbox(
+            "Choose Dataset:", 
+            available_datasets,
+            help="Select a data file from data/raw/ directory (CSV or C-MAPSS txt)",
+            key="dataset_selector"
+        )
+        
+        # C-MAPSS specific settings
+        if is_cmapss_file(selected_file):
+            st.markdown("---")
+            st.subheader("🛩️ C-MAPSS Settings")
+            st.info("NASA Turbofan Engine Degradation Dataset detected")
+            
+            rul_threshold = st.slider(
+                "RUL Threshold (cycles):",
+                min_value=10,
+                max_value=100,
+                value=st.session_state.rul_threshold,
+                help="Samples with RUL ≤ threshold are labeled as KO (degrading/failing)"
+            )
+            st.session_state.rul_threshold = rul_threshold
+            
+            st.caption(f"• **OK**: RUL > {rul_threshold} cycles (healthy)")
+            st.caption(f"• **KO**: RUL ≤ {rul_threshold} cycles (degrading)")
+        
+        # Load data when file changes or button clicked
+        if (selected_file != st.session_state.selected_file) or st.button("🔄 Load Data", key="load_data_btn"):
+            st.session_state.selected_file = selected_file
+            st.session_state.current_data = load_data_with_loader(
+                selected_file, 
+                rul_threshold=st.session_state.rul_threshold
+            )
+            # Clear preprocessing state when new data is loaded
+            for key in ['label_col', 'ok_values', 'ko_values', 'processed_df', 'preprocessing_summary', 'analysis_results']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
+            # For C-MAPSS data, auto-set the processed_df since OK/KO labels are already created
+            if is_cmapss_file(selected_file) and not st.session_state.current_data.empty:
+                st.session_state.processed_df = st.session_state.current_data.copy()
+                st.session_state.label_col = 'OK_KO_Label'
+                st.success("✅ C-MAPSS data loaded with auto-generated OK/KO labels based on RUL!")
+    
+    # Return current data
+    if st.session_state.current_data.empty:
+        st.session_state.current_data = load_data_with_loader(
+            st.session_state.selected_file,
+            rul_threshold=st.session_state.rul_threshold
+        )
+        # Auto-set for C-MAPSS on first load
+        if is_cmapss_file(st.session_state.selected_file) and not st.session_state.current_data.empty:
+            st.session_state.processed_df = st.session_state.current_data.copy()
+            st.session_state.label_col = 'OK_KO_Label'
+    
+    return st.session_state.current_data
+
+def display_sidebar(df):
+    """Configure all sidebar controls"""
+    with st.sidebar:
+        st.header("⚙️ Control Panel")
+        
+        # Dataset information
+        if not df.empty:
+            st.info(f"📊 Current Data: {df.shape[0]} rows × {df.shape[1]} columns")
+            
+            # Data validation
+            is_valid, msg = st.session_state.data_loader.validate_data_for_analysis(df)
+            if is_valid:
+                st.success(f"✅ {msg}")
+            else:
+                st.error(f"❌ {msg}")
+                return
+        
+        # Check if this is C-MAPSS data (already has OK/KO labels)
+        is_cmapss = is_cmapss_file(st.session_state.get('selected_file', ''))
+        
+        # OK/KO Label Configuration
+        with st.expander("🏷️ OK/KO Label Configuration", expanded=not is_cmapss):
+            if is_cmapss and 'OK_KO_Label' in df.columns:
+                st.success("✅ C-MAPSS data: OK/KO labels auto-generated from RUL")
+                ok_count = (df['OK_KO_Label'] == 'OK').sum()
+                ko_count = (df['OK_KO_Label'] == 'KO').sum()
+                st.write(f"**OK samples**: {ok_count} ({ok_count/len(df)*100:.1f}%)")
+                st.write(f"**KO samples**: {ko_count} ({ko_count/len(df)*100:.1f}%)")
+                st.caption("💡 Adjust RUL threshold in Data Selection to change OK/KO distribution")
+            else:
+                # Manual configuration for non-C-MAPSS data
+                # Suggested label columns
+                suggested_cols = st.session_state.data_loader.suggest_label_columns(df)
+                if suggested_cols:
+                    st.info(f"💡 Suggested label columns: {', '.join(suggested_cols)}")
+                
+                label_col = st.selectbox(
+                    "Select Label Column:", 
+                    options=df.columns,
+                    help="Choose the column containing classification labels"
+                )
+                
+                if label_col:
+                    unique_vals = df[label_col].dropna().unique().tolist()
+                    st.write(f"Unique values in '{label_col}': {unique_vals}")
+                    
+                    # OK values selection (multi-select support)
+                    ok_values = st.multiselect(
+                        "Select values as 'OK':",
+                        options=unique_vals,
+                        help="You can select multiple values as OK category"
+                    )
+                    
+                    if ok_values:
+                        ko_values = [v for v in unique_vals if v not in ok_values]
+                        st.write(f"**OK Category**: {ok_values}")
+                        st.write(f"**KO Category**: {ko_values}")
+                        
+                        if st.button("✅ Confirm OK/KO Configuration", key="confirm_okko"):
+                            st.session_state['label_col'] = label_col
+                            st.session_state['ok_values'] = ok_values
+                            st.session_state['ko_values'] = ko_values
+                            st.success("Configuration saved!")
+        
+        # Data Preprocessing Configuration
+        if 'label_col' in st.session_state:
+            with st.expander("🔧 Data Preprocessing", expanded=False):
+                st.subheader("Missing Value Handling")
+                
+                # Show missing value information
+                missing_info = df.isnull().sum()
+                cols_with_missing = missing_info[missing_info > 0]
+                
+                if len(cols_with_missing) > 0:
+                    st.write("Columns with missing values:")
+                    for col, count in cols_with_missing.items():
+                        ratio = count / len(df) * 100
+                        st.write(f"- {col}: {count} ({ratio:.1f}%)")
+                        
+                    # Processing strategy selection
+                    use_auto_strategy = st.checkbox("Use automatic handling strategy", value=True)
+                    
+                    if not use_auto_strategy:
+                        st.write("Manual configuration:")
+                        # Manual configuration options can be added here
+                        st.info("Manual configuration feature under development...")
+                else:
+                    st.success("✅ No missing values")
+                
+                st.subheader("Categorical Variable Encoding")
+                categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+                if categorical_cols:
+                    encoding_method = st.selectbox(
+                        "Encoding method:",
+                        options=['label', 'onehot'],
+                        help="label: Label encoding, onehot: One-hot encoding"
+                    )
+                else:
+                    st.info("No categorical variables to encode")
+                
+                st.subheader("Numerical Feature Scaling")
+                scale_features = st.checkbox("Scale numerical features", value=False)
+                if scale_features:
+                    scale_method = st.selectbox(
+                        "Scaling method:",
+                        options=['standard', 'minmax'],
+                        help="standard: Standardization, minmax: Min-max scaling"
+                    )
+                
+                                
+                # Important note about data leakage
+                st.info("ℹ️ Note: The original label column will be removed after creating OK_KO_Label to prevent data leakage in analysis.")
+                
+                # Start preprocessing
+                if st.button("🚀 Start Preprocessing", key="start_preprocessing"):
+                    with st.spinner("Processing data..."):
+                        try:
+                            # Create OK/KO labels (will automatically drop original label column)
+                            processed_df = st.session_state.data_preprocessor.create_ok_ko_labels(
+                                df, st.session_state['label_col'], st.session_state['ok_values'],
+                                drop_original=True  # Explicitly drop original label to prevent data leakage
+                            )
+                            
+                            # Handle missing values
+                            if len(cols_with_missing) > 0:
+                                processed_df = st.session_state.data_preprocessor.handle_missing_values(processed_df)
+                            
+                            # Encode categorical variables
+                            if categorical_cols:
+                                processed_df = st.session_state.data_preprocessor.encode_categorical_variables(processed_df)
+                            
+                            # Scale numerical features
+                            if scale_features:
+                                processed_df = st.session_state.data_preprocessor.scale_numerical_features(
+                                    processed_df, method=scale_method
+                                )
+                            
+                            # Save processed data
+                            filename = f"processed_{st.session_state['label_col']}_data.csv"
+                            saved_path = st.session_state.data_preprocessor.save_processed_data(processed_df, filename)
+                            
+                            # Save to session state
+                            st.session_state['processed_df'] = processed_df
+                            st.session_state['preprocessing_summary'] = st.session_state.data_preprocessor.get_preprocessing_summary(df, processed_df)
+                            
+                            st.success(f"✅ Data preprocessing completed! Saved to: {saved_path}")
+                            st.info(f"ℹ️  Original label column '{st.session_state['label_col']}' has been removed to prevent data leakage.")
+                            
+                        except Exception as e:
+                            st.error(f"Preprocessing failed: {str(e)}")
+
+def display_data_section(df):
+    """Upper main area with tab-based data exploration"""
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis", "🔬 Advanced Analysis", "🎯 Model Training", "🤖 AI Agent Chat"])
+
+    with tab1:
+        st.subheader("Raw Data Preview")
+        st.dataframe(df, height=300)
+        st.caption(f"Showing {len(df)} rows × {len(df.columns)} columns")
+        
+        # Basic statistics
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Data Types")
+            dtype_info = pd.DataFrame({
+                'Column': df.columns,
+                'Data Type': df.dtypes.astype(str),
+                'Non-Null': df.count(),
+                'Unique Values': [df[col].nunique() for col in df.columns]
+            })
+            st.dataframe(dtype_info, height=200)
+        
+        with col2:
+            st.subheader("Missing Values Summary")
+            missing_df = pd.DataFrame({
+                'Missing Count': df.isnull().sum(),
+                'Missing Ratio (%)': (df.isnull().mean() * 100).round(2)
+            })
+            missing_df = missing_df[missing_df['Missing Count'] > 0]
+            if not missing_df.empty:
+                st.dataframe(missing_df, height=200)
+            else:
+                st.success("✅ No missing values found")
+
+    with tab2:
+        if 'processed_df' in st.session_state:
+            st.subheader("Preprocessed Data")
+            processed_df = st.session_state['processed_df']
+            st.dataframe(processed_df, height=300)
+            
+            # Show preprocessing summary
+            if 'preprocessing_summary' in st.session_state:
+                summary = st.session_state['preprocessing_summary']
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Original Shape", f"{summary['original_shape'][0]} × {summary['original_shape'][1]}")
+                with col2:
+                    st.metric("Processed Shape", f"{summary['processed_shape'][0]} × {summary['processed_shape'][1]}")
+                with col3:
+                    st.metric("Missing Values", f"{summary['missing_values_before']} → {summary['missing_values_after']}")
+                
+                if summary['new_columns']:
+                    st.info(f"New columns added: {', '.join(summary['new_columns'])}")
+                if summary['removed_columns']:
+                    st.warning(f"Columns removed: {', '.join(summary['removed_columns'])}")
+            
+            # OK/KO Distribution
+            if 'OK_KO_Label' in processed_df.columns:
+                st.subheader("OK/KO Distribution")
+                distribution = processed_df['OK_KO_Label'].value_counts()
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    fig, ax = plt.subplots(figsize=(4, 4))
+                    ax.pie(distribution.values, labels=distribution.index, autopct='%1.1f%%')
+                    ax.set_title("OK/KO Distribution")
+                    st.pyplot(fig)
+                    plt.close(fig)  # Fix: Close figure to prevent memory leak
+                
+                with col2:
+                    st.bar_chart(distribution)
+                    
+        else:
+            st.info("Please complete data preprocessing first")
+
+    with tab3:
+        st.subheader("Data Exploration Analysis")
+        if 'processed_df' in st.session_state:
+            processed_df = st.session_state['processed_df']
+            
+            # Select features to analyze - exclude non-meaningful numerical columns
+            numerical_cols = processed_df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+            
+            # Filter out columns that are likely IDs or have very low variance
+            meaningful_numerical = []
+            for col in numerical_cols:
+                if col == 'OK_KO_Label':
+                    continue
+                # Skip columns with very high cardinality (likely IDs) - more than 90% unique values
+                if processed_df[col].nunique() > len(processed_df) * 0.9:
+                    continue
+                # Skip columns with only 1 unique value (no variance)
+                if processed_df[col].nunique() <= 1:
+                    continue
+                meaningful_numerical.append(col)
+            
+            selected_features = st.multiselect(
+                "Select numerical features to analyze:", 
+                meaningful_numerical,
+                help="Only continuous numerical features are shown. Categorical variables and IDs are excluded."
+            )
+            
+            if selected_features:
+                if 'OK_KO_Label' in processed_df.columns:
+                    # Analyze by OK/KO groups
+                    st.subheader("OK vs KO Feature Comparison")
+                    
+                    ok_data = processed_df[processed_df['OK_KO_Label'] == 'OK']
+                    ko_data = processed_df[processed_df['OK_KO_Label'] == 'KO']
+                    
+                    for feature in selected_features:
+                        st.write(f"**{feature}** Statistical Comparison:")
+                        
+                        comparison_df = pd.DataFrame({
+                            'OK': [
+                                ok_data[feature].mean(),
+                                ok_data[feature].std(),
+                                ok_data[feature].median()
+                            ],
+                            'KO': [
+                                ko_data[feature].mean(),
+                                ko_data[feature].std(),
+                                ko_data[feature].median()
+                            ]
+                        }, index=['Mean', 'Std Dev', 'Median'])
+                        
+                        st.dataframe(comparison_df.round(4))
+                        
+                        # Distribution plot
+                        fig, ax = plt.subplots(figsize=(8, 4))
+                        ax.hist(ok_data[feature].dropna(), alpha=0.5, label='OK', bins=20)
+                        ax.hist(ko_data[feature].dropna(), alpha=0.5, label='KO', bins=20)
+                        ax.set_xlabel(feature)
+                        ax.set_ylabel('Frequency')
+                        ax.set_title(f'{feature} Distribution Comparison')
+                        ax.legend()
+                        st.pyplot(fig)
+                        plt.close(fig)  # Fix: Close figure to prevent memory leak
+                else:
+                    # Basic statistical analysis
+                    st.dataframe(processed_df[selected_features].describe())
+        else:
+            st.info("Please complete data preprocessing first")
+
+    with tab4:
+        st.subheader("🔬 Advanced Feature Analysis")
+        
+        if 'processed_df' in st.session_state:
+            processed_df = st.session_state['processed_df']
+            
+            if 'OK_KO_Label' in processed_df.columns:
+                st.info("🎯 This module automatically identifies features that best distinguish between OK and KO cases using statistical tests and machine learning algorithms.")
+                
+                # Analysis configuration
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.subheader("⚙️ Analysis Settings")
+                    
+                    # Analysis method selection
+                    analysis_types = st.multiselect(
+                        "Select analysis methods:",
+                        options=['Statistical Tests', 'Machine Learning Feature Importance', 'Combined Analysis'],
+                        default=['Combined Analysis'],
+                        help="Choose which analysis methods to apply"
+                    )
+                    
+                    # Top features to display
+                    top_n = st.slider("Top N features to display:", min_value=5, max_value=min(20, len(processed_df.columns)-1), value=10)
+                
+                with col2:
+                    st.subheader("📊 Data Summary")
+                    ok_count = len(processed_df[processed_df['OK_KO_Label'] == 'OK'])
+                    ko_count = len(processed_df[processed_df['OK_KO_Label'] == 'KO'])
+                    total_features = len(processed_df.columns) - 1  # Exclude label column
+                    
+                    st.metric("OK Samples", ok_count)
+                    st.metric("KO Samples", ko_count)  
+                    st.metric("Total Features", total_features)
+                
+                # Start Analysis Button
+                if st.button("🚀 Run Advanced Analysis", type="primary"):
+                    if analysis_types:
+                        with st.spinner("Running comprehensive feature analysis... This may take a few moments."):
+                            try:
+                                # Run analysis
+                                analysis_results = st.session_state.analysis_engine.analyze_all(processed_df)
+                                st.session_state['analysis_results'] = analysis_results
+                                st.success("✅ Advanced analysis completed!")
+                            except Exception as e:
+                                st.error(f"Analysis failed: {str(e)}")
+                                st.exception(e)
+                    else:
+                        st.warning("Please select at least one analysis method")
+                
+                # Display Results
+                if 'analysis_results' in st.session_state:
+                    results = st.session_state['analysis_results']
+                    
+                    st.subheader("📋 Analysis Results")
+                    
+                    # Summary metrics
+                    summary = results.get('summary', {})
+                    
+                    if summary:
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("Significant Features", 
+                                     summary['analysis_summary'].get('features_with_statistical_significance', 0))
+                        with col2:
+                            st.metric("ML Models Tested", 
+                                     summary['analysis_summary'].get('ml_models_evaluated', 0))
+                        with col3:
+                            st.metric("Best CV Accuracy", 
+                                     f"{summary['analysis_summary'].get('cross_validated_accuracy', 0):.3f}")
+                        with col4:
+                            st.metric("Consensus Features", 
+                                     len(summary.get('consensus_features', [])))
+                    
+                    # Feature Rankings Tabs - dynamically create based on selected methods
+                    tab_names = []
+                    if 'Combined Analysis' in analysis_types:
+                        tab_names.extend(["🏆 Combined Ranking", "📊 Statistical Analysis", "🤖 ML Feature Importance"])
+                    else:
+                        if 'Statistical Tests' in analysis_types:
+                            tab_names.append("📊 Statistical Analysis")
+                        if 'Machine Learning Feature Importance' in analysis_types:
+                            tab_names.append("🤖 ML Feature Importance")
+                    
+                    # Create tabs based on selected methods
+                    if not tab_names:
+                        st.warning("Please select at least one analysis method")
+                    else:
+                        tabs = st.tabs(tab_names)
+                        
+                        # Map tabs to content
+                        tab_idx = 0
+                        
+                        # Combined Ranking (only if Combined Analysis selected)
+                        if 'Combined Analysis' in analysis_types:
+                            with tabs[tab_idx]:
+                                st.subheader("🏆 Combined Feature Ranking")
+                                st.write("Features ranked by combining statistical significance and ML importance scores")
+                                
+                                combined_ranking = summary.get('top_ml_features', [])[:top_n]
+                                if combined_ranking:
+                                    ranking_df = pd.DataFrame(combined_ranking)
+                                    # Handle both 'importance' (from AutoGluon) and 'combined_score' fields
+                                    score_field = 'importance' if 'importance' in ranking_df.columns else 'combined_score'
+                                    if score_field in ranking_df.columns:
+                                        ranking_df[score_field] = ranking_df[score_field].round(4)
+                                    st.dataframe(ranking_df, height=400)
+                                    
+                                    # Visualization
+                                    if combined_ranking:
+                                        fig, ax = plt.subplots(figsize=(10, 6))
+                                        features = [item['feature'] for item in combined_ranking]
+                                        # Get scores from the appropriate field
+                                        scores = [item.get('importance', item.get('combined_score', 0)) for item in combined_ranking]
+                                        
+                                        bars = ax.barh(features[::-1], scores[::-1])
+                                        ax.set_xlabel('Feature Importance Score')
+                                        ax.set_title(f'Top {len(features)} Features by Combined Ranking')
+                                        
+                                        # Color bars by score
+                                        if max(scores) > 0:
+                                            for i, bar in enumerate(bars):
+                                                bar.set_color(plt.cm.RdYlBu_r(scores[::-1][i] / max(scores)))
+                                        
+                                        plt.tight_layout()
+                                        st.pyplot(fig)
+                                        plt.close(fig)
+                                else:
+                                    st.info("No combined ranking available")
+                            tab_idx += 1
+                        
+                        # Statistical Analysis
+                        if 'Statistical Tests' in analysis_types or 'Combined Analysis' in analysis_types:
+                            with tabs[tab_idx]:
+                                st.subheader("📊 Statistical Analysis Results")
+                                
+                                statistical_results = results.get('statistical_analysis', {})
+                                stat_ranking = summary.get('top_statistical_features', [])[:top_n]
+                                
+                                if stat_ranking:
+                                    st.write("Features ranked by statistical significance (p-value and effect size)")
+                                    
+                                    stat_df = pd.DataFrame(stat_ranking)
+                                    if 'p_value' in stat_df.columns:
+                                        stat_df['p_value'] = stat_df['p_value'].round(6)
+                                    if 'effect_size' in stat_df.columns:
+                                        stat_df['effect_size'] = stat_df['effect_size'].round(4)
+                                    st.dataframe(stat_df, height=400)
+                                    
+                                    # P-value visualization
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    features = [item['feature'] for item in stat_ranking]
+                                    p_values = [item.get('p_value', 1) for item in stat_ranking]
+                                    
+                                    # Use negative log p-values for better visualization
+                                    neg_log_p = [-np.log10(max(p, 1e-16)) for p in p_values]
+                                    
+                                    bars = ax.barh(features[::-1], neg_log_p[::-1])
+                                    ax.set_xlabel('-log10(p-value)')
+                                    ax.set_title('Statistical Significance of Features')
+                                    ax.axvline(-np.log10(0.05), color='red', linestyle='--', alpha=0.7, label='p=0.05 threshold')
+                                    ax.legend()
+                                    
+                                    plt.tight_layout()
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+                                else:
+                                    st.info("No statistical analysis results available")
+                            tab_idx += 1
+                        
+                        # ML Feature Importance
+                        if 'Machine Learning Feature Importance' in analysis_types or 'Combined Analysis' in analysis_types:
+                            with tabs[tab_idx]:
+                                st.subheader("🤖 AutoGluon ML Feature Importance")
+                                
+                                ml_results = results.get('feature_importance', {})
+                                
+                                # Display best model info
+                                best_model_info = ml_results.get('best_model', {})
+                                if best_model_info:
+                                    st.success(f"🏆 Best Model: **{best_model_info.get('name', 'Unknown')}** | Validation Score: **{best_model_info.get('score_val', 0):.4f}**")
+                                    
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("Validation Accuracy", f"{best_model_info.get('score_val', 0):.4f}")
+                                    with col2:
+                                        if best_model_info.get('fit_time'):
+                                            st.metric("Training Time", f"{best_model_info.get('fit_time', 0):.2f}s")
+                                    with col3:
+                                        if best_model_info.get('pred_time_val'):
+                                            st.metric("Prediction Time", f"{best_model_info.get('pred_time_val', 0):.4f}s")
+                                
+                                # Model leaderboard
+                                leaderboard = ml_results.get('model_leaderboard', [])
+                                if leaderboard:
+                                    st.write("**AutoGluon Model Leaderboard:**")
+                                    leaderboard_df = pd.DataFrame(leaderboard)
+                                    
+                                    # Select relevant columns for display
+                                    display_cols = ['model', 'score_val', 'pred_time_val', 'fit_time', 'stack_level']
+                                    available_cols = [col for col in display_cols if col in leaderboard_df.columns]
+                                    
+                                    if available_cols:
+                                        display_df = leaderboard_df[available_cols].copy()
+                                        # Round numeric columns
+                                        for col in display_df.select_dtypes(include=[np.number]).columns:
+                                            display_df[col] = display_df[col].round(4)
+                                        st.dataframe(display_df, height=300)
+                                
+                                # Feature importance
+                                feature_importance_info = ml_results.get('feature_importance', {})
+                                if feature_importance_info:
+                                    feature_ranking = feature_importance_info.get('feature_ranking', [])[:top_n]
+                                    
+                                    if feature_ranking:
+                                        st.write(f"**Top {len(feature_ranking)} Most Important Features (AutoGluon):**")
+                                        
+                                        importance_df = pd.DataFrame(feature_ranking)
+                                        if not importance_df.empty:
+                                            # Display table
+                                            display_df = importance_df[['feature', 'importance', 'rank']].copy()
+                                            display_df['importance'] = display_df['importance'].round(4)
+                                            st.dataframe(display_df, height=300)
+                                            
+                                            # Feature importance visualization
+                                            fig, ax = plt.subplots(figsize=(10, 6))
+                                            features = display_df['feature'].tolist()
+                                            importances = display_df['importance'].tolist()
+                                            
+                                            bars = ax.barh(features[::-1], importances[::-1])
+                                            ax.set_xlabel('Feature Importance Score')
+                                            ax.set_title('AutoGluon Feature Importance (Permutation-based)')
+                                            
+                                            # Color gradient
+                                            for i, bar in enumerate(bars):
+                                                bar.set_color(plt.cm.viridis(importances[::-1][i] / max(importances)))
+                                            
+                                            plt.tight_layout()
+                                            st.pyplot(fig)
+                                            plt.close(fig)
+                                    else:
+                                        st.info("No feature importance data available")
+                                else:
+                                    st.info("Feature importance analysis not yet completed")
+                    
+                    # Consensus Features - ONLY show when Combined Analysis is selected
+                    if 'Combined Analysis' in analysis_types and summary.get('consensus_features'):
+                        st.subheader("🎯 Consensus Features")
+                        st.write("Features that appear in **both** statistical and ML top rankings:")
+                        
+                        consensus_features = summary['consensus_features']
+                        for i, feature in enumerate(consensus_features, 1):
+                            st.write(f"{i}. **{feature}**")
+                        
+                        if len(consensus_features) > 0:
+                            st.success(f"Found {len(consensus_features)} features with strong consensus across methods!")
+                        else:
+                            st.info("No strong consensus features found. Consider reviewing analysis parameters.")
+            else:
+                st.warning("OK/KO labels not found. Please complete preprocessing first.")
+        else:
+            st.info("Please complete data preprocessing to access advanced analysis features.")
+    
+    with tab5:
+        st.subheader("🎯 Model Training - Simple Discriminative Models")
+        st.markdown(
+            "Train simple models (Logistic Regression, SVM, Decision Tree, Random Forest) "
+            "using top features identified by AutoGluon to validate feature importance."
+        )
+        
+        if 'processed_df' not in st.session_state or st.session_state['processed_df'] is None:
+            st.warning("⚠️ Please complete data preprocessing first.")
+        elif 'analysis_results' not in st.session_state or not st.session_state['analysis_results']:
+            st.warning("⚠️ Please run Advanced Analysis first to identify important features.")
+        else:
+            processed_df = st.session_state['processed_df']
+            analysis_results = st.session_state['analysis_results']
+            
+            # Get feature importance ranking
+            fi = analysis_results.get('feature_importance', {})
+            feature_info = fi.get('feature_importance', {})
+            feature_ranking = feature_info.get('feature_ranking', [])
+            
+            if not feature_ranking:
+                st.error("❌ No feature importance ranking found. Please run Advanced Analysis again.")
+            else:
+                feature_names = [f['feature'] for f in feature_ranking]
+                
+                # Configuration
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Calculate max available features
+                    max_available = len(feature_names)
+                    default_counts = sorted(set([5, 10, 15, max_available]))
+                    default_counts = [f for f in default_counts if f > 0 and f <= max_available]
+                    
+                    n_features_options = st.multiselect(
+                        "Select feature counts to test (includes ALL features for comparison):",
+                        [5, 10, 15, 20, 25, max_available],
+                        default=default_counts,
+                        help="Compare model performance with different numbers of top features. Will always include all features as baseline."
+                    )
+                    # Always add max features for baseline comparison
+                    if max_available not in n_features_options:
+                        n_features_options = sorted(list(set(n_features_options + [max_available])))
+                    else:
+                        n_features_options = sorted(list(set(n_features_options)))
+                
+                with col2:
+                    model_options = st.multiselect(
+                        "Select models to train:",
+                        ["Logistic Regression", "SVM", "Decision Tree", "Random Forest"],
+                        default=["Logistic Regression", "Decision Tree", "Random Forest"],
+                        help="Different model types to compare"
+                    )
+                    if not model_options:
+                        model_options = ["Logistic Regression", "Decision Tree"]
+                
+                # Train button
+                if st.button("🚀 Train Models", key="train_btn", type="primary"):
+                    with st.spinner("Training models with different feature counts..."):
+                        try:
+                            from analysis.model_trainer import ModelTrainer
+                            
+                            trainer = ModelTrainer()
+                            
+                            # Map model names to short codes
+                            model_map = {
+                                "Logistic Regression": "logistic",
+                                "SVM": "svm",
+                                "Decision Tree": "dt",
+                                "Random Forest": "rf"
+                            }
+                            selected_models = [model_map[m] for m in model_options]
+                            
+                            # Train models
+                            results = trainer.train_models_with_feature_selection(
+                                df=processed_df,
+                                feature_importance_ranking=feature_names,
+                                feature_counts=n_features_options,
+                                model_names=selected_models
+                            )
+                            
+                            if results["success"]:
+                                st.session_state['training_results'] = results
+                                st.success(results["message"])
+                            else:
+                                st.error(results["message"])
+                        except Exception as e:
+                            st.error(f"❌ Training failed: {str(e)}")
+                
+                # Display results if available
+                if 'training_results' in st.session_state:
+                    results = st.session_state['training_results']
+                    
+                    # Performance Summary Table - Show all combinations
+                    st.subheader("📊 Performance Summary (All Feature/Model Combinations)")
+                    perf_df = results["performance_summary"].copy()
+                    
+                    # Highlight best accuracy
+                    st.dataframe(
+                        perf_df.style.highlight_max(subset=['Accuracy'], color='lightgreen'),
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    # Summary statistics by feature count
+                    st.subheader("📈 Performance by Feature Count")
+                    detailed_results = results["detailed_results"]
+                    
+                    # Group by feature count
+                    feature_performance = {}
+                    for res in detailed_results:
+                        n_feat = res['n_features']
+                        if n_feat not in feature_performance:
+                            feature_performance[n_feat] = {'accuracies': [], 'models': []}
+                        feature_performance[n_feat]['accuracies'].append(res['accuracy'])
+                        feature_performance[n_feat]['models'].append(res['model'])
+                    
+                    # Show comparison for each feature count
+                    feat_cols = st.columns(min(4, len(feature_performance)))
+                    for i, n_feat in enumerate(sorted(feature_performance.keys())):
+                        with feat_cols[i % len(feat_cols)]:
+                            accs = feature_performance[n_feat]['accuracies']
+                            avg_acc = np.mean(accs)
+                            best_acc = np.max(accs)
+                            best_model = feature_performance[n_feat]['models'][accs.index(best_acc)]
+                            
+                            st.metric(
+                                f"Top {n_feat} Features",
+                                f"{avg_acc:.4f}",
+                                delta=f"Best: {best_model} ({best_acc:.4f})"
+                            )
+                    
+                    # Best Model Metrics
+                    st.subheader("🏆 Best Model Overall")
+                    best = results["best_model"]
+                    
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1:
+                        st.metric("Model", best['name'].upper())
+                    with col2:
+                        st.metric("Features Used", f"{best['n_features']}/{len(feature_names)}")
+                    with col3:
+                        st.metric("Accuracy", f"{best['accuracy']:.4f}")
+                    with col4:
+                        st.metric("F1 Score", f"{best['f1']:.4f}")
+                    with col5:
+                        st.metric("Recall", f"{best['recall']:.4f}")
+                    
+                    # Plot 1: Feature count vs accuracy (per model)
+                    st.subheader("📈 Model Accuracy vs Feature Count")
+                    plot_data = results["plot_data"]
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    
+                    for model, accs in plot_data["feature_vs_accuracy"].items():
+                        feature_vals = plot_data["feature_counts"][:len(accs)]
+                        ax.plot(
+                            feature_vals,
+                            accs,
+                            marker="o",
+                            label=model.upper(),
+                            linewidth=2.5,
+                            markersize=8
+                        )
+                    
+                    ax.set_xlabel("Number of Features", fontsize=12, fontweight='bold')
+                    ax.set_ylabel("Accuracy", fontsize=12, fontweight='bold')
+                    ax.set_title("Model Accuracy vs Feature Count (Top Features Selected)", fontsize=13, fontweight='bold')
+                    ax.legend(fontsize=10)
+                    ax.grid(True, alpha=0.3)
+                    ax.set_xticks(plot_data["feature_counts"])
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    st.info(f"💡 **Insight**: Adding features up to top {best['n_features']} provides the best accuracy ({best['accuracy']:.4f}). Using all {len(feature_names)} features may lead to overfitting.")
+                    
+                    # Plot 2: Model comparison (bar chart)
+                    st.subheader("🎯 Model Comparison (Average Accuracy Across Feature Counts)")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    models = [m.upper() for m in plot_data["model_comparison"].keys()]
+                    accs = list(plot_data["model_comparison"].values())
+                    colors = ['#FF6B6B' if acc < 0.8 else '#4ECDC4' if acc < 0.9 else '#45B7D1' for acc in accs]
+                    bars = ax.bar(models, accs, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+                    ax.set_ylabel("Average Accuracy", fontsize=11, fontweight='bold')
+                    ax.set_title("Average Accuracy by Model Type", fontsize=13, fontweight='bold')
+                    ax.set_ylim([0, 1.1])
+                    
+                    # Add value labels on bars
+                    for i, (bar, v) in enumerate(zip(bars, accs)):
+                        ax.text(bar.get_x() + bar.get_width()/2, v + 0.03, 
+                               f"{v:.3f}", ha="center", va="bottom", fontweight='bold', fontsize=10)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    # Plot 3: Confusion matrix for best model
+                    st.subheader("🔍 Confusion Matrix (Best Model)")
+                    from sklearn.metrics import confusion_matrix
+                    cm = confusion_matrix(best["y_test"], best["y_pred"])
+                    
+                    fig, ax = plt.subplots(figsize=(7, 6))
+                    sns.heatmap(
+                        cm,
+                        annot=True,
+                        fmt="d",
+                        cmap="RdYlGn",
+                        xticklabels=["KO", "OK"],
+                        yticklabels=["KO", "OK"],
+                        ax=ax,
+                        cbar_kws={'label': 'Count'},
+                        annot_kws={'fontsize': 12, 'fontweight': 'bold'}
+                    )
+                    ax.set_ylabel("True Label", fontsize=11, fontweight='bold')
+                    ax.set_xlabel("Predicted Label", fontsize=11, fontweight='bold')
+                    ax.set_title(f"Confusion Matrix - {best['name'].upper()} (Top {best['n_features']} Features)", 
+                                fontsize=12, fontweight='bold')
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    # Classification report
+                    st.subheader("📋 Detailed Classification Report")
+                    from sklearn.metrics import classification_report
+                    report = classification_report(best["y_test"], best["y_pred"], 
+                                                 target_names=["KO", "OK"], digits=4)
+                    st.code(report, language="text")
+                    
+                    # Feature comparison - Top features vs all features
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("✅ Best Model: Top Features Used")
+                        st.write(f"**Using Top {best['n_features']} Features (Accuracy: {best['accuracy']:.4f})**")
+                        for i, feat in enumerate(best['features'], 1):
+                            st.write(f"{i}. {feat}")
+                    
+                    with col2:
+                        st.subheader("📊 Feature Importance Ranking")
+                        st.write(f"**All {len(feature_names)} Features (Ranked by AutoGluon)**")
+                        for i, feat_dict in enumerate(feature_ranking[:15], 1):
+                            imp = feat_dict.get('importance', 0)
+                            st.write(f"{i}. {feat_dict['feature']} (importance: {imp:.4f})")
+
+    with tab6:
+        st.subheader("🤖 AI Agent - Natural Language Data Analysis")
+        st.markdown("Ask questions about your data or request plots in natural language!")
+        
+        if 'processed_df' not in st.session_state or st.session_state['processed_df'] is None:
+            st.warning("⚠️ Please complete data preprocessing first to use the AI Agent.")
+            st.info("The AI Agent needs preprocessed data with OK/KO labels to perform analysis.")
+        else:
+            processed_df = st.session_state['processed_df']
+            
+            # AI Agent Configuration in Sidebar
+            with st.sidebar:
+                st.header("🤖 AI Agent Settings")
+                
+                st.info("🎯 **Local Deployment Mode**\n\nThis project uses local LLAMA3 via Ollama (as per project requirements)")
+                
+                # LLM Backend Selection
+                llm_backend = st.selectbox(
+                    "LLM Backend:",
+                    options=["ollama", "openai"],
+                    index=0,  # Default to ollama
+                    help="Ollama = Local LLAMA3 (recommended). OpenAI = Cloud API (backup option)."
+                )
+                
+                if llm_backend == "ollama":
+                    st.success("✅ Using Local LLM (LLAMA3)")
+                    st.markdown("""
+                    **Setup Instructions:**
+                    1. Download: https://ollama.ai/download
+                    2. Install Ollama
+                    3. Run: `ollama pull llama3`
+                    4. Ollama service should start automatically
+                    """)
+                else:
+                    st.warning("⚠️ Using OpenAI API (requires API key)")
+                    api_key_input = st.text_input(
+                        "OpenAI API Key:",
+                        type="password",
+                        value=os.getenv("OPENAI_API_KEY", ""),
+                        help="Backup option - Enter API key"
+                    )
+                    if api_key_input:
+                        os.environ["OPENAI_API_KEY"] = api_key_input
+                
+                # LLM Interpretation Toggle
+                st.markdown("---")
+                enable_interpretation = st.checkbox(
+                    "🧠 Enable LLM Interpretation",
+                    value=st.session_state.enable_llm_interpretation,
+                    help="Let AI explain what the analysis results mean (slower but more insightful)"
+                )
+                
+                if enable_interpretation != st.session_state.enable_llm_interpretation:
+                    st.session_state.enable_llm_interpretation = enable_interpretation
+                    st.session_state.agent.enable_llm_interpretation = enable_interpretation
+                    if enable_interpretation:
+                        st.info("🤖 LLM will now interpret analysis results")
+                    else:
+                        st.info("⚡ Fast mode: Direct tool outputs only")
+                
+                # Update agent backend if changed
+                if st.button("🔄 Update Agent Backend"):
+                    try:
+                        st.session_state.agent = StatisticalAgent(
+                            llm_backend=llm_backend,
+                            api_key=os.getenv("OPENAI_API_KEY"),
+                            enable_llm_interpretation=st.session_state.enable_llm_interpretation
+                        )
+                        st.success(f"✅ Agent backend updated to {llm_backend}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+                
+                if st.button("🗑️ Clear Chat History"):
+                    st.session_state.chat_history = []
+                    st.session_state.agent.clear_conversation()
+                    st.success("Chat history cleared!")
+            
+            # Update Agent's data context
+            if st.session_state.agent.current_data is None or \
+               st.session_state.agent.current_data.shape != processed_df.shape:
+                st.session_state.agent.set_data_context(processed_df, {
+                    'filename': st.session_state.get('selected_file', 'Unknown'),
+                    'label_col': st.session_state.get('label_col', 'Unknown')
+                })
+            
+            # Always sync analysis results if available (even if data shape hasn't changed)
+            if 'analysis_results' in st.session_state:
+                st.session_state.agent.set_analysis_results(st.session_state['analysis_results'])
+            
+            # Example queries
+            st.markdown("### 💡 Example Queries:")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("""
+                **Statistical Analysis:**
+                - "Show statistical summary for sensor_2"
+                - "What's the mean and std for sensor_11?"
+                - "Get feature importance ranking"
+                """)
+            
+            with col2:
+                st.markdown("""
+                **Visualization:**
+                - "Plot histogram of sensor_11"
+                - "Show time series for KO samples of sensor_2"
+                - "Plot FFT for sensor_7"
+                - "Show boxplot for sensor_4"
+                """)
+            
+            st.markdown("---")
+            
+            # Chat Input (put BEFORE chat history for better UX)
+            user_input = st.chat_input("Ask a question about your data or request a plot...")
+            
+            # Process user input first
+            if user_input:
+                # Add user message to history
+                st.session_state.chat_history.append({
+                    'role': 'user',
+                    'content': user_input
+                })
+                
+                # Get AI response
+                with st.spinner("🤔 Thinking..."):
+                    try:
+                        # Clear all previous matplotlib figures to prevent caching issues
+                        plt.close('all')
+                        
+                        response = st.session_state.agent.chat(user_input)
+                        
+                        # Add assistant response to history
+                        st.session_state.chat_history.append({
+                            'role': 'assistant',
+                            'content': response['response'],
+                            'plots': response.get('plots', [])
+                        })
+                        
+                    except Exception as e:
+                        error_msg = f"❌ Error: {str(e)}"
+                        st.session_state.chat_history.append({
+                            'role': 'assistant',
+                            'content': error_msg
+                        })
+            
+            # Display Chat History (newest at bottom, near input box)
+            chat_container = st.container()
+            with chat_container:
+                # Show chat history from newest to oldest (reversed)
+                for msg in reversed(st.session_state.chat_history):
+                    with st.chat_message(msg['role']):
+                        st.markdown(msg['content'])
+                        
+                        # Display plots if any
+                        if msg.get('plots'):
+                            for plot_fig in msg['plots']:
+                                st.pyplot(plot_fig)
+
+def main():
+    st.title("🤖 Statistical AI Agent - Data Analysis Platform")
+    st.markdown("Automated OK/KO data analysis, feature identification and model training")
+    
+    # Load data
+    df = load_default_data()
+    
+    if not df.empty:
+        # Build interface
+        display_sidebar(df)
+        display_data_section(df) 
+    else:
+        st.warning("Please place your dataset files in data/raw/ folder")
+        st.info("Supported file formats: CSV")
+
+if __name__ == "__main__":
+    main()

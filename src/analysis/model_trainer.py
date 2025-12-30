@@ -104,13 +104,33 @@ class ModelTrainer:
 
             for n_features in feature_counts:
                 top_features = feature_importance_ranking[:n_features]
-                X = df[top_features].copy()
-
-                # Handle missing values
-                X = X.fillna(X.median())
-
-                # One-hot encode categorical columns
-                X = pd.get_dummies(X, drop_first=True)
+                
+                # Filter out features that don't exist in DataFrame
+                available_features = [f for f in top_features if f in df.columns]
+                if len(available_features) < len(top_features):
+                    missing = set(top_features) - set(available_features)
+                    print(f"⚠️ Warning: {len(missing)} features not found in DataFrame: {missing}")
+                
+                X = df[available_features].copy()
+                
+                # Identify and handle categorical columns (object/string type)
+                categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+                
+                if categorical_cols:
+                    print(f"📋 Found {len(categorical_cols)} categorical columns: {categorical_cols}")
+                    # One-hot encode categorical columns
+                    X = pd.get_dummies(X, columns=categorical_cols, drop_first=True)
+                    print(f"✅ After encoding: {X.shape[1]} features")
+                
+                # Handle missing values in numerical columns only
+                numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns
+                if len(numerical_cols) > 0:
+                    X[numerical_cols] = X[numerical_cols].fillna(X[numerical_cols].median())
+                
+                # Verify all columns are numeric
+                non_numeric = X.select_dtypes(exclude=['int64', 'float64', 'int32', 'float32', 'bool']).columns
+                if len(non_numeric) > 0:
+                    raise ValueError(f"❌ Non-numeric columns remain after encoding: {non_numeric.tolist()}")
 
                 # Split data
                 X_train, X_test, y_train, y_test = train_test_split(
