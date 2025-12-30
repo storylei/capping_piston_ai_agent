@@ -288,7 +288,7 @@ def display_sidebar(df):
 
 def display_data_section(df):
     """Upper main area with tab-based data exploration"""
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis", "🔬 Advanced Analysis", "🤖 AI Agent Chat"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Raw Data", "🔍 Preprocessing Results", "📈 Data Analysis", "🔬 Advanced Analysis", "🎯 Model Training", "🤖 AI Agent Chat"])
 
     with tab1:
         st.subheader("Raw Data Preview")
@@ -697,6 +697,249 @@ def display_data_section(df):
             st.info("Please complete data preprocessing to access advanced analysis features.")
     
     with tab5:
+        st.subheader("🎯 Model Training - Simple Discriminative Models")
+        st.markdown(
+            "Train simple models (Logistic Regression, SVM, Decision Tree, Random Forest) "
+            "using top features identified by AutoGluon to validate feature importance."
+        )
+        
+        if 'processed_df' not in st.session_state or st.session_state['processed_df'] is None:
+            st.warning("⚠️ Please complete data preprocessing first.")
+        elif 'analysis_results' not in st.session_state or not st.session_state['analysis_results']:
+            st.warning("⚠️ Please run Advanced Analysis first to identify important features.")
+        else:
+            processed_df = st.session_state['processed_df']
+            analysis_results = st.session_state['analysis_results']
+            
+            # Get feature importance ranking
+            fi = analysis_results.get('feature_importance', {})
+            feature_info = fi.get('feature_importance', {})
+            feature_ranking = feature_info.get('feature_ranking', [])
+            
+            if not feature_ranking:
+                st.error("❌ No feature importance ranking found. Please run Advanced Analysis again.")
+            else:
+                feature_names = [f['feature'] for f in feature_ranking]
+                
+                # Configuration
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Calculate max available features
+                    max_available = len(feature_names)
+                    default_counts = sorted(set([5, 10, 15, max_available]))
+                    default_counts = [f for f in default_counts if f > 0 and f <= max_available]
+                    
+                    n_features_options = st.multiselect(
+                        "Select feature counts to test (includes ALL features for comparison):",
+                        [5, 10, 15, 20, 25, max_available],
+                        default=default_counts,
+                        help="Compare model performance with different numbers of top features. Will always include all features as baseline."
+                    )
+                    # Always add max features for baseline comparison
+                    if max_available not in n_features_options:
+                        n_features_options = sorted(list(set(n_features_options + [max_available])))
+                    else:
+                        n_features_options = sorted(list(set(n_features_options)))
+                
+                with col2:
+                    model_options = st.multiselect(
+                        "Select models to train:",
+                        ["Logistic Regression", "SVM", "Decision Tree", "Random Forest"],
+                        default=["Logistic Regression", "Decision Tree", "Random Forest"],
+                        help="Different model types to compare"
+                    )
+                    if not model_options:
+                        model_options = ["Logistic Regression", "Decision Tree"]
+                
+                # Train button
+                if st.button("🚀 Train Models", key="train_btn", type="primary"):
+                    with st.spinner("Training models with different feature counts..."):
+                        try:
+                            from analysis.model_trainer import ModelTrainer
+                            
+                            trainer = ModelTrainer()
+                            
+                            # Map model names to short codes
+                            model_map = {
+                                "Logistic Regression": "logistic",
+                                "SVM": "svm",
+                                "Decision Tree": "dt",
+                                "Random Forest": "rf"
+                            }
+                            selected_models = [model_map[m] for m in model_options]
+                            
+                            # Train models
+                            results = trainer.train_models_with_feature_selection(
+                                df=processed_df,
+                                feature_importance_ranking=feature_names,
+                                feature_counts=n_features_options,
+                                model_names=selected_models
+                            )
+                            
+                            if results["success"]:
+                                st.session_state['training_results'] = results
+                                st.success(results["message"])
+                            else:
+                                st.error(results["message"])
+                        except Exception as e:
+                            st.error(f"❌ Training failed: {str(e)}")
+                
+                # Display results if available
+                if 'training_results' in st.session_state:
+                    results = st.session_state['training_results']
+                    
+                    # Performance Summary Table - Show all combinations
+                    st.subheader("📊 Performance Summary (All Feature/Model Combinations)")
+                    perf_df = results["performance_summary"].copy()
+                    
+                    # Highlight best accuracy
+                    st.dataframe(
+                        perf_df.style.highlight_max(subset=['Accuracy'], color='lightgreen'),
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    # Summary statistics by feature count
+                    st.subheader("📈 Performance by Feature Count")
+                    detailed_results = results["detailed_results"]
+                    
+                    # Group by feature count
+                    feature_performance = {}
+                    for res in detailed_results:
+                        n_feat = res['n_features']
+                        if n_feat not in feature_performance:
+                            feature_performance[n_feat] = {'accuracies': [], 'models': []}
+                        feature_performance[n_feat]['accuracies'].append(res['accuracy'])
+                        feature_performance[n_feat]['models'].append(res['model'])
+                    
+                    # Show comparison for each feature count
+                    feat_cols = st.columns(min(4, len(feature_performance)))
+                    for i, n_feat in enumerate(sorted(feature_performance.keys())):
+                        with feat_cols[i % len(feat_cols)]:
+                            accs = feature_performance[n_feat]['accuracies']
+                            avg_acc = np.mean(accs)
+                            best_acc = np.max(accs)
+                            best_model = feature_performance[n_feat]['models'][accs.index(best_acc)]
+                            
+                            st.metric(
+                                f"Top {n_feat} Features",
+                                f"{avg_acc:.4f}",
+                                delta=f"Best: {best_model} ({best_acc:.4f})"
+                            )
+                    
+                    # Best Model Metrics
+                    st.subheader("🏆 Best Model Overall")
+                    best = results["best_model"]
+                    
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1:
+                        st.metric("Model", best['name'].upper())
+                    with col2:
+                        st.metric("Features Used", f"{best['n_features']}/{len(feature_names)}")
+                    with col3:
+                        st.metric("Accuracy", f"{best['accuracy']:.4f}")
+                    with col4:
+                        st.metric("F1 Score", f"{best['f1']:.4f}")
+                    with col5:
+                        st.metric("Recall", f"{best['recall']:.4f}")
+                    
+                    # Plot 1: Feature count vs accuracy (per model)
+                    st.subheader("📈 Model Accuracy vs Feature Count")
+                    plot_data = results["plot_data"]
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    
+                    for model, accs in plot_data["feature_vs_accuracy"].items():
+                        feature_vals = plot_data["feature_counts"][:len(accs)]
+                        ax.plot(
+                            feature_vals,
+                            accs,
+                            marker="o",
+                            label=model.upper(),
+                            linewidth=2.5,
+                            markersize=8
+                        )
+                    
+                    ax.set_xlabel("Number of Features", fontsize=12, fontweight='bold')
+                    ax.set_ylabel("Accuracy", fontsize=12, fontweight='bold')
+                    ax.set_title("Model Accuracy vs Feature Count (Top Features Selected)", fontsize=13, fontweight='bold')
+                    ax.legend(fontsize=10)
+                    ax.grid(True, alpha=0.3)
+                    ax.set_xticks(plot_data["feature_counts"])
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    st.info(f"💡 **Insight**: Adding features up to top {best['n_features']} provides the best accuracy ({best['accuracy']:.4f}). Using all {len(feature_names)} features may lead to overfitting.")
+                    
+                    # Plot 2: Model comparison (bar chart)
+                    st.subheader("🎯 Model Comparison (Average Accuracy Across Feature Counts)")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    models = [m.upper() for m in plot_data["model_comparison"].keys()]
+                    accs = list(plot_data["model_comparison"].values())
+                    colors = ['#FF6B6B' if acc < 0.8 else '#4ECDC4' if acc < 0.9 else '#45B7D1' for acc in accs]
+                    bars = ax.bar(models, accs, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+                    ax.set_ylabel("Average Accuracy", fontsize=11, fontweight='bold')
+                    ax.set_title("Average Accuracy by Model Type", fontsize=13, fontweight='bold')
+                    ax.set_ylim([0, 1.1])
+                    
+                    # Add value labels on bars
+                    for i, (bar, v) in enumerate(zip(bars, accs)):
+                        ax.text(bar.get_x() + bar.get_width()/2, v + 0.03, 
+                               f"{v:.3f}", ha="center", va="bottom", fontweight='bold', fontsize=10)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    # Plot 3: Confusion matrix for best model
+                    st.subheader("🔍 Confusion Matrix (Best Model)")
+                    from sklearn.metrics import confusion_matrix
+                    cm = confusion_matrix(best["y_test"], best["y_pred"])
+                    
+                    fig, ax = plt.subplots(figsize=(7, 6))
+                    sns.heatmap(
+                        cm,
+                        annot=True,
+                        fmt="d",
+                        cmap="RdYlGn",
+                        xticklabels=["KO", "OK"],
+                        yticklabels=["KO", "OK"],
+                        ax=ax,
+                        cbar_kws={'label': 'Count'},
+                        annot_kws={'fontsize': 12, 'fontweight': 'bold'}
+                    )
+                    ax.set_ylabel("True Label", fontsize=11, fontweight='bold')
+                    ax.set_xlabel("Predicted Label", fontsize=11, fontweight='bold')
+                    ax.set_title(f"Confusion Matrix - {best['name'].upper()} (Top {best['n_features']} Features)", 
+                                fontsize=12, fontweight='bold')
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                    # Classification report
+                    st.subheader("📋 Detailed Classification Report")
+                    from sklearn.metrics import classification_report
+                    report = classification_report(best["y_test"], best["y_pred"], 
+                                                 target_names=["KO", "OK"], digits=4)
+                    st.code(report, language="text")
+                    
+                    # Feature comparison - Top features vs all features
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("✅ Best Model: Top Features Used")
+                        st.write(f"**Using Top {best['n_features']} Features (Accuracy: {best['accuracy']:.4f})**")
+                        for i, feat in enumerate(best['features'], 1):
+                            st.write(f"{i}. {feat}")
+                    
+                    with col2:
+                        st.subheader("📊 Feature Importance Ranking")
+                        st.write(f"**All {len(feature_names)} Features (Ranked by AutoGluon)**")
+                        for i, feat_dict in enumerate(feature_ranking[:15], 1):
+                            imp = feat_dict.get('importance', 0)
+                            st.write(f"{i}. {feat_dict['feature']} (importance: {imp:.4f})")
+
+    with tab6:
         st.subheader("🤖 AI Agent - Natural Language Data Analysis")
         st.markdown("Ask questions about your data or request plots in natural language!")
         
