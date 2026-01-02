@@ -60,19 +60,17 @@ class DataLoader:
         except Exception as e:
             raise Exception(f"Error loading file: {str(e)}")
     
-    def load_cmapss_data(self, train_file: str, rul_file: str = None, 
-                         rul_threshold: int = 30) -> pd.DataFrame:
+    def load_cmapss_data(self, train_file: str, rul_file: str = None) -> pd.DataFrame:
         """
-        Load NASA C-MAPSS Turbofan Engine Degradation dataset
+        Load NASA C-MAPSS Turbofan Engine Degradation dataset (ORIGINAL 26 columns)
         
         Args:
             train_file: Training data file (e.g., 'train_FD001.txt')
             rul_file: RUL file for test data (e.g., 'RUL_FD001.txt'), optional
-            rul_threshold: Cycles threshold for OK/KO classification
-                          (RUL <= threshold = KO/Failing, RUL > threshold = OK/Normal)
         
         Returns:
-            DataFrame with computed RUL and OK/KO labels
+            DataFrame with original 26 columns (no calculations, no labels)
+            User will create labels in configuration UI Step 2
         """
         filepath = os.path.join(self.raw_data_dir, train_file)
         
@@ -89,35 +87,18 @@ class DataLoader:
                 if len(col_names) < df.shape[1]:
                     col_names.extend([f'extra_{i}' for i in range(df.shape[1] - len(col_names))])
                 df.columns = col_names
-            
-            # Compute RUL (Remaining Useful Life) for each sample
-            df = self._compute_rul(df)
-            
-            # Create OK/KO labels based on RUL threshold
-            # KO = engine is degrading/near failure (low RUL)
-            # OK = engine is healthy (high RUL)
-            df['OK_KO_Label'] = df['RUL'].apply(
-                lambda x: 'KO' if x <= rul_threshold else 'OK'
-            )
-            
-            # IMPORTANT: Drop RUL column to prevent data leakage!
-            # RUL is used to create OK_KO_Label, so it cannot be used as a feature
-            df = df.drop(columns=['RUL'])
-            
+
             # Drop unit_id as it's just an identifier
             # Keep time_cycles for time-series visualization (but exclude from ML features)
             df = df.drop(columns=['unit_id'])
             
             # Mark time_cycles as the time axis for plotting (metadata)
             df.attrs['time_column'] = 'time_cycles'
-            df.attrs['exclude_from_ml'] = ['time_cycles']  # Exclude from ML analysis
+            df.attrs['exclude_from_ml'] = ['time_cycles']  # Exclude from ML analysis  
             
             print(f"✅ Successfully loaded C-MAPSS data: {train_file}")
             print(f"Data shape: {df.shape}")
-            print(f"RUL threshold for OK/KO: {rul_threshold} cycles")
-            print(f"OK samples: {(df['OK_KO_Label'] == 'OK').sum()}")
-            print(f"KO samples: {(df['OK_KO_Label'] == 'KO').sum()}")
-            print(f"ℹ️  Removed RUL and unit_id; kept time_cycles for visualization")
+            print(f"⚠️  Raw data with 26 columns - user will create OK/KO labels in Step 2")
             
             return df
             
@@ -157,8 +138,7 @@ class DataLoader:
         """
         # Check if it's a C-MAPSS file
         if filename.startswith(('train_FD', 'test_FD')) and filename.endswith('.txt'):
-            rul_threshold = kwargs.get('rul_threshold', 30)
-            return self.load_cmapss_data(filename, rul_threshold=rul_threshold)
+            return self.load_cmapss_data(filename)
         elif filename.endswith('.txt'):
             # Try to load as space-separated txt
             filepath = os.path.join(self.raw_data_dir, filename)

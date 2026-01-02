@@ -79,8 +79,6 @@ def main():
     # Sidebar navigation
     selected_tab = display_sidebar()
     
-    # st.markdown("---")
-    
     # Route to selected tab
     if selected_tab == 'configuration':
         configuration.display()

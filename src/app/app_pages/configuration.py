@@ -3,7 +3,8 @@ Configuration Page - Wizard-style setup for data processing
 Step 1: Load Data
 Step 2: Configure OK/KO Labels
 Step 3: Preprocessing Settings
-Step 4: Ready to proceed
+Step 4: AI Agent Configuration
+Step 5: Complete
 """
 
 import streamlit as st
@@ -42,11 +43,29 @@ def display():
         col = [progress_col1, progress_col2, progress_col3, progress_col4, progress_col5][i]
         with col:
             if step_num < st.session_state.config_step:
-                st.success(step_name)
+                st.markdown(f"""
+                <div style="background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; 
+                           padding: 12px; text-align: center; font-weight: 500; color: #155724;
+                           display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                    {step_name}
+                </div>
+                """, unsafe_allow_html=True)
             elif step_num == st.session_state.config_step:
-                st.info(step_name)
+                st.markdown(f"""
+                <div style="background-color: #d1ecf1; border: 1px solid #bee5eb; border-radius: 5px; 
+                           padding: 12px; text-align: center; font-weight: 600; color: #0c5460;
+                           display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                    {step_name}
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                st.write(f"⏳ {step_name}")
+                st.markdown(f"""
+                <div style="background-color: #e9ecef; border: 1px solid #dee2e6; border-radius: 5px; 
+                           padding: 12px; text-align: center; font-weight: 500; color: #6c757d;
+                           display: flex; align-items: center; justify-content: center; min-height: 50px;">
+                    {step_name}
+                </div>
+                """, unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -76,30 +95,13 @@ def display():
         )
         st.session_state.selected_file = selected_file
         
-        # C-MAPSS specific settings
-        is_cmapss = selected_file.startswith('train_FD') and selected_file.endswith('.txt')
-        
-        rul_threshold = 30
-        if is_cmapss:
-            st.markdown("**🛩️ C-MAPSS Dataset Settings**")
-            rul_threshold = st.slider(
-                "RUL Threshold (cycles):",
-                min_value=10,
-                max_value=100,
-                value=30,
-                help="Samples with RUL ≤ threshold labeled as KO"
-            )
-            st.caption(f"• **OK**: RUL > {rul_threshold} cycles (healthy)")
-            st.caption(f"• **KO**: RUL ≤ {rul_threshold} cycles (degrading)")
-        
         # Load data
         if st.button("📥 Load Data", type="primary"):
             with st.spinner("Loading data..."):
                 try:
-                    df = loader.load_file(selected_file, rul_threshold=rul_threshold)
+                    # Load without rul_threshold to preserve RUL column for Step 2
+                    df = loader.load_file(selected_file)
                     st.session_state.current_data = df
-                    st.session_state.rul_threshold = rul_threshold
-                    st.session_state.is_cmapss = is_cmapss
                     
                     st.success(f"✅ Loaded: {selected_file} ({df.shape[0]} rows × {df.shape[1]} cols)")
                     
@@ -107,15 +109,7 @@ def display():
                     st.subheader("Data Preview")
                     st.dataframe(df.head(), height=200)
                     
-                    # For C-MAPSS, auto-configure
-                    if is_cmapss and 'OK_KO_Label' in df.columns:
-                        st.session_state.processed_df = df.copy()
-                        st.session_state.label_col = 'OK_KO_Label'
-                        st.session_state.config_step = 3  # Skip to Step 3 (Preprocess)
-                        st.info("✅ C-MAPSS data auto-configured with OK/KO labels. Proceed to Step 3.")
-                    else:
-                        st.session_state.config_step = 2  # Go to Step 2
-                    
+                    st.session_state.config_step = 2  # Proceed to Step 2
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Failed to load data: {str(e)}")
@@ -134,47 +128,136 @@ def display():
         
         df = st.session_state.current_data
         
-        # Suggest label columns
-        loader = DataLoader()
-        suggested_cols = loader.suggest_label_columns(df)
-        
-        if suggested_cols:
-            st.info(f"💡 Suggested label columns: {', '.join(suggested_cols)}")
-        
-        # Select label column
-        label_col = st.selectbox(
-            "Select Label Column:",
-            options=df.columns,
-            help="Column containing OK/KO classification"
+        # Classification method selection (without key to allow modification in button)
+        st.markdown("**🔄 Select Classification Method**")
+        classification_method = st.radio(
+            "How to classify OK/KO:",
+            options=['by_values', 'by_threshold'],
+            format_func=lambda x: "📋 By Values" if x == 'by_values' else "📊 By Threshold"
         )
         
-        if label_col:
-            unique_vals = df[label_col].dropna().unique().tolist()
-            st.write(f"**Unique values**: {unique_vals}")
+        st.markdown("---")
+        
+        # ========== METHOD 1: BY VALUES ==========
+        if classification_method == 'by_values':
+            st.markdown("**Select column values that represent OK state**")
             
-            # Multi-select for OK values
-            ok_values = st.multiselect(
-                "Select values as 'OK':",
-                options=unique_vals,
-                help="Can select multiple values as OK category"
+            loader = DataLoader()
+            suggested_cols = loader.suggest_label_columns(df)
+            
+            if suggested_cols:
+                st.info(f"💡 Suggested label columns: {', '.join(suggested_cols)}")
+            
+            # Select label column
+            label_col = st.selectbox(
+                "Select Label Column:",
+                options=df.columns,
+                help="Column containing OK/KO classification",
+                key="label_col_values"
             )
             
-            if ok_values:
-                ko_values = [v for v in unique_vals if v not in ok_values]
-                st.write(f"**OK**: {ok_values}")
-                st.write(f"**KO**: {ko_values}")
+            if label_col:
+                unique_vals = df[label_col].dropna().unique().tolist()
+                st.write(f"**Unique values in '{label_col}**: {unique_vals}")
                 
-                # Confirm button
-                if st.button("✅ Confirm Configuration", type="primary"):
-                    st.session_state.label_col = label_col
-                    st.session_state.ok_values = ok_values
-                    st.session_state.ko_values = ko_values
-                    st.session_state.config_step = 3
-                    st.success("Configuration saved! Proceeding to Step 3...")
-                    st.rerun()
+                # Multi-select for OK values
+                ok_values = st.multiselect(
+                    "Select values as 'OK':",
+                    options=unique_vals,
+                    help="Can select multiple values as OK category",
+                    key="ok_values_select"
+                )
+                
+                if ok_values:
+                    ko_values = [v for v in unique_vals if v not in ok_values]
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**✅ OK values**: {ok_values}")
+                    with col2:
+                        st.write(f"**❌ KO values**: {ko_values}")
+                    
+                    # Confirm button
+                    if st.button("✅ Confirm Configuration", type="primary", key="confirm_values"):
+                        # Convert to Python native types to avoid serialization issues
+                        ok_values_native = [str(v) if not isinstance(v, (str, int, float, bool)) else v for v in ok_values]
+                        ko_values_native = [str(v) if not isinstance(v, (str, int, float, bool)) else v for v in ko_values]
+                        
+                        st.session_state.label_col = label_col
+                        st.session_state.ok_values = ok_values_native
+                        st.session_state.ko_values = ko_values_native
+                        st.session_state.config_step = 3
+                        st.success("Configuration saved! Proceeding to Step 3...")
+                        st.rerun()
+        
+        # ========== METHOD 2: BY THRESHOLD ==========
+        else:  # by_threshold
+            st.markdown("**Select a numerical column and set threshold**")
+            st.info("📌 Values above threshold = OK, values below/equal = KO")
+            
+            # Get numerical columns (including int, float, and numeric types)
+            numerical_cols = df.select_dtypes(include=['int64', 'float64', 'int32', 'float32', np.integer, np.floating]).columns.tolist()
+            
+            if not numerical_cols:
+                st.error("❌ No numerical columns found. Please use 'By Values' method.")
+            else:
+                threshold_col = st.selectbox(
+                    "Select Numerical Column:",
+                    options=numerical_cols,
+                    help="Column to use for threshold-based classification",
+                    key="threshold_col"
+                )
+                
+                if threshold_col:
+                    col_min = df[threshold_col].min()
+                    col_max = df[threshold_col].max()
+                    col_mean = df[threshold_col].mean()
+                    
+                    st.caption(f"📊 Column stats: min={col_min:.2f}, mean={col_mean:.2f}, max={col_max:.2f}")
+                    
+                    # Set threshold
+                    threshold_value = st.slider(
+                        f"Set threshold for '{threshold_col}':",
+                        min_value=float(col_min),
+                        max_value=float(col_max),
+                        value=float(col_mean),
+                        key="threshold_value"
+                    )
+                    
+                    # Show preview
+                    ok_count = (df[threshold_col] > threshold_value).sum()
+                    ko_count = (df[threshold_col] <= threshold_value).sum()
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("✅ OK Samples", ok_count)
+                    with col2:
+                        st.metric("❌ KO Samples", ko_count)
+                    with col3:
+                        st.metric("Total", len(df))
+                    
+                    st.write(f"**Classification rule**: {threshold_col} > {threshold_value:.2f} = OK")
+                    
+                    # Confirm button
+                    if st.button("✅ Confirm Configuration", type="primary", key="confirm_threshold"):
+                        # Calculate RUL if threshold_col is 'time_cycles' (special case for C-MAPSS)
+                        df_for_step3 = df.copy()
+                        actual_threshold_col = threshold_col
+                        
+                        if threshold_col == 'time_cycles' and 'unit_id' in df.columns:
+                            # Use loader's _compute_rul method
+                            df_for_step3 = loader._compute_rul(df_for_step3)
+                            actual_threshold_col = 'RUL'
+                        
+                        # Update current_data with calculated columns (e.g., RUL if computed)
+                        st.session_state.current_data = df_for_step3
+                        st.session_state.label_col = actual_threshold_col
+                        st.session_state.confirmed_threshold_value = threshold_value
+                        st.session_state.config_step = 3
+                        st.success("Configuration saved! Proceeding to Step 3...")
+                        st.rerun()
         
         # Back button
-        if st.button("← Back to Step 1"):
+        if st.button("← Back to Step 1", key="back_step1_from_step2"):
             st.session_state.config_step = 1
             st.rerun()
     
@@ -192,13 +275,41 @@ def display():
         
         df = st.session_state.current_data
         
-        # Show current config
-        st.info(
-            f"**Data**: {df.shape[0]} rows × {df.shape[1]} cols\n"
-            f"**Label Column**: {st.session_state.label_col}\n"
-            f"**OK Values**: {st.session_state.ok_values}\n"
-            f"**KO Values**: {st.session_state.ko_values}"
-        )
+        # Show current config - conditional based on classification method
+        if 'confirmed_threshold_value' in st.session_state:
+            # Threshold-based method
+            threshold_col = st.session_state.label_col
+            threshold_value = st.session_state.confirmed_threshold_value
+            
+            # Calculate preview
+            ok_count = (df[threshold_col] > threshold_value).sum()
+            ko_count = (df[threshold_col] <= threshold_value).sum()
+            
+            st.info(
+                f"**Data**: {df.shape[0]} rows × {df.shape[1]} cols\n"
+                f"**Classification Method**: By Threshold\n"
+                f"**Label Column**: {st.session_state.label_col}\n"
+                f"**Threshold Value**: {st.session_state.confirmed_threshold_value:.2f}"
+            )
+            
+            # Show OK/KO counts
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("✅ OK Samples", ok_count)
+            with col2:
+                st.metric("❌ KO Samples", ko_count)
+            with col3:
+                st.metric("Total", len(df))
+                
+        else:
+            # Values-based method
+            st.info(
+                f"**Data**: {df.shape[0]} rows × {df.shape[1]} cols\n"
+                f"**Classification Method**: By Values\n"
+                f"**Label Column**: {st.session_state.label_col}\n"
+                f"**OK Values**: {st.session_state.get('ok_values', [])}\n"
+                f"**KO Values**: {st.session_state.get('ko_values', [])}"
+            )
         
         # Preprocessing options
         col1, col2 = st.columns(2)
@@ -225,13 +336,24 @@ def display():
                 try:
                     preprocessor = DataPreprocessor()
                     
-                    # Step 1: Create OK/KO labels
-                    processed_df = preprocessor.create_ok_ko_labels(
-                        df=df,
-                        label_col=st.session_state.label_col,
-                        ok_values=st.session_state.ok_values,
-                        drop_original=True
-                    )
+                    # Handle two classification methods
+                    # Method 1: threshold-based (if confirmed_threshold_value is in session_state)
+                    if 'confirmed_threshold_value' in st.session_state:
+                        # Create labels based on threshold
+                        threshold_col = st.session_state.label_col
+                        threshold_value = st.session_state.confirmed_threshold_value
+                        processed_df = df.copy()
+                        processed_df['OK_KO_Label'] = (processed_df[threshold_col] > threshold_value).astype(str)
+                        processed_df['OK_KO_Label'] = processed_df['OK_KO_Label'].map({'True': 'OK', 'False': 'KO'})
+                        processed_df = processed_df.drop(columns=[threshold_col])
+                    else:
+                        # Method 2: Create labels based on selected values
+                        processed_df = preprocessor.create_ok_ko_labels(
+                            df=df,
+                            label_col=st.session_state.label_col,
+                            ok_values=st.session_state.ok_values,
+                            drop_original=True
+                        )
                     
                     # Step 2: Handle missing values - convert strategy string to dict
                     if missing_strategy == 'drop':
