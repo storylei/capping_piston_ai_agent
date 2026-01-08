@@ -106,8 +106,8 @@ def display():
                     st.success(f"✅ Loaded: {selected_file} ({df.shape[0]} rows × {df.shape[1]} cols)")
                     
                     # Show preview
-                    st.subheader("Data Preview")
-                    st.dataframe(df.head(), height=200)
+                    # st.subheader("Data Preview")
+                    # st.dataframe(df.head(), height=200)
                     
                     st.session_state.config_step = 2  # Proceed to Step 2
                     st.rerun()
@@ -117,7 +117,7 @@ def display():
     # ========== STEP 2: Configure OK/KO Labels ==========
     elif st.session_state.config_step == 2:
         st.subheader("🏷️ Step 2: Configure OK/KO Labels")
-        st.markdown("Define which values represent OK (healthy) and KO (degraded) states")
+        st.markdown("Define which values represent OK and KO states")
         
         if 'current_data' not in st.session_state:
             st.warning("⚠️ Please complete Step 1 first")

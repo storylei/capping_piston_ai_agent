@@ -21,9 +21,6 @@ from app_pages import configuration, raw_data, preprocessing, data_analysis, adv
 
 def initialize_session_state():
     """Initialize all session state variables"""
-    if 'data_loader' not in st.session_state:
-        st.session_state.data_loader = DataLoader()
-    
     if 'data_preprocessor' not in st.session_state:
         st.session_state.data_preprocessor = DataPreprocessor()
     

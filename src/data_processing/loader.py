@@ -167,6 +167,7 @@ class DataLoader:
         
         return sorted(supported_files)
     
+    # not use now
     def validate_data_for_analysis(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """Validate if data is suitable for OK/KO analysis"""
         if df.empty:
@@ -180,6 +181,7 @@ class DataLoader:
         
         return True, "Data validation passed"
     
+    # not use now
     def get_column_info(self, df: pd.DataFrame) -> dict:
         """Get column information for label selection"""
         column_info = {}
