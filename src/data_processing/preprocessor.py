@@ -6,7 +6,7 @@ Handle missing values, encode categorical variables, feature scaling, etc.
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Union
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 import os
 
 
@@ -61,17 +61,23 @@ class DataPreprocessor:
         Handle missing values
         
         strategy: dictionary with column names as keys and processing strategies as values
-        Available strategies: 'mean', 'median', 'mode', 'drop', 'forward_fill', 'custom_value'
+        Available strategies: 'none', 'mean', 'median', 'mode', 'drop', 'forward_fill'
         """
         df_copy = df.copy()
         
         if strategy is None:
             strategy = self._get_default_strategy(df_copy)
+
+        # If caller explicitly provides an empty strategy, return unchanged
+        if not strategy:
+            return df_copy
             
         for col, method in strategy.items():
             if col not in df_copy.columns:
                 continue
                 
+            if method == 'none':
+                continue
             if method == 'mean' and df_copy[col].dtype in ['int64', 'float64']:
                 df_copy[col].fillna(df_copy[col].mean(), inplace=True)
             elif method == 'median' and df_copy[col].dtype in ['int64', 'float64']:
@@ -82,9 +88,9 @@ class DataPreprocessor:
                 df_copy[col].fillna(method='ffill', inplace=True)
             elif method == 'drop':
                 df_copy.dropna(subset=[col], inplace=True)
-            elif method.startswith('custom_'):
-                custom_value = method.split('_', 1)[1]
-                df_copy[col].fillna(custom_value, inplace=True)
+            else:
+                # Unknown strategy: skip to avoid unintended fills
+                continue
                 
         return df_copy
     
@@ -94,7 +100,7 @@ class DataPreprocessor:
         Encode categorical variables
         
         encoding_methods: dictionary with column names as keys and encoding methods as values
-        Available methods: 'label', 'onehot', 'target'
+        Available methods: 'label', 'onehot'
         """
         df_copy = df.copy()
         categorical_cols = df_copy.select_dtypes(include=['object']).columns
@@ -136,6 +142,14 @@ class DataPreprocessor:
                 if col not in self.scalers:
                     self.scalers[col] = StandardScaler()
                 df_copy[col] = self.scalers[col].fit_transform(
+                    df_copy[col].values.reshape(-1, 1)
+                ).flatten()
+        elif method == 'minmax':
+            for col in numerical_cols:
+                key = f"minmax_{col}"
+                if key not in self.scalers:
+                    self.scalers[key] = MinMaxScaler()
+                df_copy[col] = self.scalers[key].fit_transform(
                     df_copy[col].values.reshape(-1, 1)
                 ).flatten()
                 

@@ -15,7 +15,7 @@ from data_processing import DataLoader, DataPreprocessor
 from analysis import StatisticalAnalyzer
 from agent import StatisticalAgent
 from components.sidebar import display_sidebar
-from app_pages import configuration, raw_data, preprocessing, data_analysis, advanced_analysis, model_training, ai_agent
+from app_pages import configuration, data_overview, data_analysis, advanced_analysis, model_training, ai_agent
 
 
 
@@ -79,10 +79,8 @@ def main():
     # Route to selected tab
     if selected_tab == 'configuration':
         configuration.display()
-    elif selected_tab == 'raw_data':
-        raw_data.display()
-    elif selected_tab == 'preprocessing':
-        preprocessing.display()
+    elif selected_tab == 'data_overview':
+        data_overview.display()
     elif selected_tab == 'data_analysis':
         data_analysis.display()
     elif selected_tab == 'advanced_analysis':

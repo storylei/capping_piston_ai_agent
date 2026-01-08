@@ -15,9 +15,8 @@ def display_sidebar():
         
         tabs = [
             ("⚙️ Configuration", "configuration"),
-            ("📋 Raw Data", "raw_data"),
-            ("🔧 Preprocessing", "preprocessing"),
-            ("📊 Data Analysis", "data_analysis"),
+            ("📊 Data Overview", "data_overview"),
+            ("📈 Data Analysis", "data_analysis"),
             ("🔬 Advanced Analysis", "advanced_analysis"),
             ("🎯 Model Training", "model_training"),
             ("🤖 AI Agent Chat", "ai_agent"),
