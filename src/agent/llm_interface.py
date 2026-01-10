@@ -1,18 +1,17 @@
 """
 LLM Interface Module
-Supports both local LLM (Ollama) and OpenAI API for flexible deployment
+Local LLM support using Ollama
 """
 
 import json
 import requests
 from typing import Dict, List, Optional, Any
-import os
 
 
 class LLMInterface:
     """
-    Unified interface for LLM interactions
-    Supports: Ollama (local LLAMA3), OpenAI API
+    Interface for local LLM interactions using Ollama
+    Supports: Ollama (local LLAMA3)
     """
     
     def __init__(self, backend: str = "ollama", model: str = None, api_key: str = None):
@@ -20,23 +19,14 @@ class LLMInterface:
         Initialize LLM interface
         
         Args:
-            backend: "ollama" for local LLAMA3, "openai" for OpenAI API
-            model: Model name (e.g., "llama3", "gpt-4", "gpt-3.5-turbo")
-            api_key: OpenAI API key (required if backend="openai")
+            backend: Ignored (kept for compatibility), always uses Ollama
+            model: Model name (e.g., "llama3", "llama3:latest")
+            api_key: Ignored (kept for compatibility)
         """
-        self.backend = backend.lower()
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        
-        if self.backend == "ollama":
-            self.model = model or "llama3:latest"
-            self.base_url = "http://localhost:11434"
-            self._check_ollama_available()
-        elif self.backend == "openai":
-            self.model = model or "gpt-3.5-turbo"
-            if not self.api_key:
-                raise ValueError("OpenAI API key required for 'openai' backend")
-        else:
-            raise ValueError(f"Unsupported backend: {backend}")
+        # Ignore backend and api_key parameters, always use Ollama
+        self.model = model or "llama3:latest"
+        self.base_url = "http://localhost:11434"
+        self._check_ollama_available()
     
     def _check_ollama_available(self):
         """Check if Ollama service is running"""
@@ -51,7 +41,7 @@ class LLMInterface:
             return True
         except requests.exceptions.ConnectionError:
             print("⚠️  Warning: Ollama service not running.")
-            print("   Please start Ollama or switch to 'openai' backend")
+            print("   Please start Ollama service.")
             print("   Install: https://ollama.ai/download")
             return False
         except Exception as e:
@@ -63,7 +53,7 @@ class LLMInterface:
                 max_tokens: int = 2000,
                 tools: List[Dict] = None) -> Dict[str, Any]:
         """
-        Generate response from LLM
+        Generate response from LLM using Ollama
         
         Args:
             messages: List of message dicts with 'role' and 'content'
@@ -74,10 +64,7 @@ class LLMInterface:
         Returns:
             Dictionary with 'content' and optional 'tool_calls'
         """
-        if self.backend == "ollama":
-            return self._generate_ollama(messages, temperature, max_tokens, tools)
-        elif self.backend == "openai":
-            return self._generate_openai(messages, temperature, max_tokens, tools)
+        return self._generate_ollama(messages, temperature, max_tokens, tools)
     
     def _generate_ollama(self, messages: List[Dict[str, str]], 
                         temperature: float,
@@ -126,50 +113,6 @@ class LLMInterface:
                 'content': "❌ Error: Cannot connect to Ollama. Please start Ollama service.",
                 'tool_calls': None,
                 'error': 'connection_failed'
-            }
-        except Exception as e:
-            return {
-                'content': f"❌ Error: {str(e)}",
-                'tool_calls': None,
-                'error': str(e)
-            }
-    
-    def _generate_openai(self, messages: List[Dict[str, str]], 
-                        temperature: float,
-                        max_tokens: int,
-                        tools: List[Dict] = None) -> Dict[str, Any]:
-        """Generate response using OpenAI API"""
-        try:
-            import openai
-            openai.api_key = self.api_key
-            
-            kwargs = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            }
-            
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            
-            response = openai.chat.completions.create(**kwargs)
-            
-            message = response.choices[0].message
-            
-            return {
-                'content': message.content or '',
-                'tool_calls': message.tool_calls if hasattr(message, 'tool_calls') else None,
-                'model': self.model,
-                'backend': 'openai'
-            }
-            
-        except ImportError:
-            return {
-                'content': "❌ Error: OpenAI library not installed. Run: pip install openai",
-                'tool_calls': None,
-                'error': 'missing_library'
             }
         except Exception as e:
             return {
@@ -239,15 +182,12 @@ class LLMInterface:
     def stream_generate(self, messages: List[Dict[str, str]], 
                        temperature: float = 0.7):
         """
-        Stream response from LLM (for real-time chat display)
+        Stream response from Ollama LLM (for real-time chat display)
         
         Yields:
             Chunks of generated text
         """
-        if self.backend == "ollama":
-            yield from self._stream_ollama(messages, temperature)
-        elif self.backend == "openai":
-            yield from self._stream_openai(messages, temperature)
+        yield from self._stream_ollama(messages, temperature)
     
     def _stream_ollama(self, messages: List[Dict[str, str]], temperature: float):
         """Stream from Ollama"""
@@ -273,25 +213,5 @@ class LLMInterface:
                     if 'response' in chunk:
                         yield chunk['response']
                         
-        except Exception as e:
-            yield f"❌ Error: {str(e)}"
-    
-    def _stream_openai(self, messages: List[Dict[str, str]], temperature: float):
-        """Stream from OpenAI"""
-        try:
-            import openai
-            openai.api_key = self.api_key
-            
-            stream = openai.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                stream=True
-            )
-            
-            for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-                    
         except Exception as e:
             yield f"❌ Error: {str(e)}"

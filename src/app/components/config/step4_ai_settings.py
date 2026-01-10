@@ -32,33 +32,15 @@ def display():
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**🔌 LLM Backend Selection**")
-        llm_backend = st.radio(
-            "Choose LLM Backend:",
-            options=["ollama", "openai"],
-            index=0,
-            help="Ollama = Local LLAMA3 (recommended for project). OpenAI = Cloud API."
-        )
-        
-        if llm_backend == "ollama":
-            st.success("✅ Using Local LLM (LLAMA3)")
-            st.markdown("""
-            **Setup Instructions:**
-            - Download: https://ollama.ai/download
-            - Run: `ollama pull llama3`
-            - Start: `ollama serve`
-            """)
-        else:
-            st.warning("⚠️ Using OpenAI API")
-            api_key = st.text_input(
-                "OpenAI API Key:",
-                type="password",
-                value=os.getenv("OPENAI_API_KEY", ""),
-                help="Enter your OpenAI API key"
-            )
-            if api_key:
-                os.environ["OPENAI_API_KEY"] = api_key
-                st.success("✅ API key saved")
+        st.markdown("**🔌 LLM Backend**")
+        llm_backend = "ollama"
+        st.success("✅ Using Local LLM (LLAMA3)")
+        st.markdown("""
+        **Setup Instructions:**
+        - Download: https://ollama.ai/download
+        - Run: `ollama pull llama3`
+        - Start: `ollama serve`
+        """)
     
     with col2:
         st.markdown("**🧠 LLM Interpretation Settings**")
@@ -95,11 +77,10 @@ def display():
             # Create/update agent
             st.session_state.agent = StatisticalAgent(
                 llm_backend=llm_backend,
-                api_key=os.getenv("OPENAI_API_KEY"),
                 enable_llm_interpretation=enable_interpretation
             )
             
-            st.success(f"✅ AI Agent configured with {llm_backend.upper()} backend")
+            st.success("✅ AI Agent configured with Ollama (Local LLM)")
             st.session_state.config_complete = True
             st.session_state.config_step = 5
             st.balloons()

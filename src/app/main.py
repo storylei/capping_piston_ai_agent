@@ -28,10 +28,8 @@ def initialize_session_state():
         st.session_state.analysis_engine = StatisticalAnalyzer()
     
     if 'agent' not in st.session_state:
-        llm_backend = os.getenv('LLM_BACKEND', 'ollama')
         st.session_state.agent = StatisticalAgent(
-            llm_backend=llm_backend,
-            api_key=os.getenv('OPENAI_API_KEY'),
+            llm_backend='ollama',
             enable_llm_interpretation=False
         )
     
