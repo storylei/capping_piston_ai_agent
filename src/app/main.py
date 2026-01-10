@@ -28,9 +28,28 @@ def initialize_session_state():
         st.session_state.analysis_engine = StatisticalAnalyzer()
     
     if 'agent' not in st.session_state:
+        # Get configuration from session state or environment variables
+        llm_backend = st.session_state.get('llm_backend', os.getenv('LLM_BACKEND', 'ollama'))
+        llm_model = st.session_state.get('llm_model', None)
+        
+        # Get API key based on backend
+        api_key = st.session_state.get('llm_api_key', None)
+        if not api_key:
+            # Try environment variables
+            env_keys = {
+                'openai': 'OPENAI_API_KEY',
+                'claude': 'ANTHROPIC_API_KEY',
+                'gemini': 'GOOGLE_API_KEY',
+                'deepseek': 'DEEPSEEK_API_KEY'
+            }
+            if llm_backend in env_keys:
+                api_key = os.getenv(env_keys[llm_backend])
+        
         st.session_state.agent = StatisticalAgent(
-            llm_backend='ollama',
-            enable_llm_interpretation=False
+            llm_backend=llm_backend,
+            llm_model=llm_model,
+            api_key=api_key,
+            enable_llm_interpretation=st.session_state.get('enable_llm_interpretation', False)
         )
     
     if 'enable_llm_interpretation' not in st.session_state:
@@ -47,6 +66,16 @@ def initialize_session_state():
     
     if 'nav_tab' not in st.session_state:
         st.session_state.nav_tab = 'configuration'
+    
+    # Initialize LLM configuration state
+    if 'llm_backend' not in st.session_state:
+        st.session_state.llm_backend = 'ollama'
+    
+    if 'llm_model' not in st.session_state:
+        st.session_state.llm_model = None
+    
+    if 'llm_api_key' not in st.session_state:
+        st.session_state.llm_api_key = None
 
 
 def main():
