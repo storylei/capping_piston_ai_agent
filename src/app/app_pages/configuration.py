@@ -61,7 +61,7 @@ def _render_progress_indicator():
 
 def display():
     """Display configuration wizard"""
-    st.title("⚙️ Configuration Wizard")
+    st.subheader("⚙️ Configuration Wizard")
     st.markdown("Complete the setup steps to prepare your data for analysis")
     
     # Initialize config state if needed

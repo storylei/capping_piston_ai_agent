@@ -31,6 +31,12 @@ Singleton instances initialized in `main.py` and shared across all pages.
 - **Purpose**: Statistical analysis engine for data exploration
 - **Methods**: `analyze_all()`, `compute_statistics()`, `generate_visualizations()`
 
+### `st.session_state.ml_analyzer`
+- **Type**: `FeatureImportanceAnalyzer`
+- **Initialized**: `main.py`
+- **Purpose**: AutoGluon-based ML feature importance analyzer (optional/longer-running)
+- **Methods**: `analyze_feature_importance()`, `get_top_features()`, `get_best_model()`
+
 ### `st.session_state.agent`
 - **Type**: `StatisticalAgent`
 - **Initialized**: `main.py` (updated in Step 4)

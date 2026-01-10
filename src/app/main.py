@@ -13,6 +13,7 @@ sys.path.insert(0, str(project_root))
 
 from data_processing import DataLoader, DataPreprocessor
 from analysis import StatisticalAnalyzer
+from analysis.feature_importance import FeatureImportanceAnalyzer
 from agent import StatisticalAgent
 from components.sidebar import display_sidebar
 from app_pages import configuration, data_overview, data_analysis, advanced_analysis, model_training, ai_agent
@@ -26,6 +27,10 @@ def initialize_session_state():
     
     if 'analysis_engine' not in st.session_state:
         st.session_state.analysis_engine = StatisticalAnalyzer()
+    
+    # Initialize ML feature importance analyzer separately
+    if 'ml_analyzer' not in st.session_state:
+        st.session_state.ml_analyzer = FeatureImportanceAnalyzer(random_state=42)
     
     if 'agent' not in st.session_state:
         llm_backend = os.getenv('LLM_BACKEND', 'ollama')
