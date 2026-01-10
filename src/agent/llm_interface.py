@@ -149,6 +149,7 @@ class LLMInterface:
         
         return "\n".join(prompt_parts)
     
+    #reserved
     def _parse_tool_calls(self, content: str) -> Optional[List[Dict]]:
         """Parse tool calls from Ollama response"""
         if "TOOL_CALL:" not in content:
@@ -179,6 +180,7 @@ class LLMInterface:
         except Exception:
             return None
     
+    #reserved
     def stream_generate(self, messages: List[Dict[str, str]], 
                        temperature: float = 0.7):
         """
@@ -189,6 +191,7 @@ class LLMInterface:
         """
         yield from self._stream_ollama(messages, temperature)
     
+    #reserved
     def _stream_ollama(self, messages: List[Dict[str, str]], temperature: float):
         """Stream from Ollama"""
         try:
