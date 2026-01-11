@@ -37,8 +37,16 @@ def display():
                     help="Choose which analysis methods to apply"
                 )
                 
-                # Top features to display
-                top_n = st.slider("Top N features to display:", min_value=5, max_value=min(20, len(processed_df.columns)-1), value=10)
+                # Top features to display (dynamic bounds based on available features)
+                max_features = max(1, len(processed_df.columns) - 1)  # exclude label
+                min_features = min(5, max_features)
+                default_top_n = min(10, max_features)
+                top_n = st.slider(
+                    "Top N features to display:",
+                    min_value=min_features,
+                    max_value=max_features,
+                    value=default_top_n,
+                )
             
             with col2:
                 st.subheader("📊 Data Summary")
