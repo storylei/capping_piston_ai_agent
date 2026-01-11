@@ -26,48 +26,68 @@ def display():
     st.subheader("🎯 Model Training - Simple Discriminative Models")
     st.markdown("Train simple models (Logistic Regression, SVM, Decision Tree, Random Forest) using top features")
     
-    # Get feature importance from either ML analysis or statistical analysis
-    feature_names = []
-    feature_source = None
-    
-    # Try ML Feature Importance first
-    ml_importance = analysis_results.get('ml_feature_importance', {})
-    if ml_importance and ml_importance.get('feature_importance', {}).get('feature_ranking'):
-        feature_ranking_ml = ml_importance['feature_importance']['feature_ranking']
-        feature_names = [f['feature'] for f in feature_ranking_ml]
-        feature_source = "AutoGluon ML Analysis"
-    
-    # Fallback to Statistical Analysis
-    if not feature_names:
-        statistical_ranking = analysis_results.get('feature_ranking', [])
-        if statistical_ranking:
-            feature_names = [f['feature'] for f in statistical_ranking]
-            feature_source = "Statistical Analysis"
-    
-    if not feature_names:
-        st.error("❌ No feature importance ranking found. Please run Advanced Analysis first and select either 'Statistical Tests', 'Machine Learning Feature Importance', or 'Combined Analysis'.")
-        st.info("📌 How to fix:\n1. Go to 'Advanced Analysis' tab\n2. Select at least one analysis method\n3. Click '🚀 Run Advanced Analysis'\n4. Return to this tab")
+    # Feature source selection (Statistical vs ML)
+    has_statistical = bool(analysis_results.get('feature_ranking'))
+    has_ml = bool(analysis_results.get('ml_feature_importance', {})
+                   .get('feature_importance', {})
+                   .get('feature_ranking'))
+
+    if not has_statistical and not has_ml:
+        st.error("❌ No feature importance ranking found. Please run Advanced Analysis first.")
+        st.info("📌 How to fix:\n1. Go to 'Advanced Analysis' tab\n2. Select at least one analysis method (Statistical Tests or ML Feature Importance)\n3. Click '🚀 Run Advanced Analysis'\n4. Return to this tab")
         return
-    
+
+    feature_source_options = []
+    if has_statistical:
+        feature_source_options.append("Statistical Analysis")
+    if has_ml:
+        feature_source_options.append("AutoGluon ML Analysis")
+
+    default_index = 0
+    if has_ml and has_statistical:
+        # prefer ML as default when both available
+        default_index = 1
+
+    feature_source = st.radio(
+        "Select feature ranking source for training:",
+        options=feature_source_options,
+        index=default_index,
+        help="Choose which analysis method's feature ranking to use for model training"
+    )
+
+    feature_names = []
+    if feature_source == "AutoGluon ML Analysis":
+        feature_ranking_ml = analysis_results['ml_feature_importance']['feature_importance']['feature_ranking']
+        feature_names = [f['feature'] for f in feature_ranking_ml]
+    else:
+        feature_names = [f['feature'] for f in analysis_results.get('feature_ranking', [])]
+
+    if not feature_names:
+        st.error("❌ Failed to extract feature ranking from the selected source.")
+        return
+
     st.success(f"✅ Using {len(feature_names)} features from {feature_source}")
     
     # Configuration
     col1, col2 = st.columns(2)
     with col1:
         max_available = len(feature_names)
-        default_counts = sorted(set([5, 10, 15, max_available]))
-        default_counts = [f for f in default_counts if f > 0 and f <= max_available]
+        
+        # 从3到max_available生成所有可选项
+        valid_options = list(range(3, max_available + 1))
+        
+        # 默认选择3个均匀分布的值
+        default_counts = [3, max_available // 2, max_available] if max_available >= 3 else [max_available]
+        default_counts = sorted(list(set(default_counts)))
         
         n_features_options = st.multiselect(
             "Select feature counts to test:",
-            [5, 10, 15, 20, 25, max_available],
+            valid_options,
             default=default_counts,
-            help="Compare model performance with different numbers of top features"
+            help="Choose how many top features to test (max 5 configurations)",
+            max_selections=10
         )
-        if max_available not in n_features_options:
-            n_features_options = sorted(list(set(n_features_options + [max_available])))
-        else:
-            n_features_options = sorted(list(set(n_features_options)))
+        n_features_options = sorted(list(set(n_features_options)))
     
     with col2:
         model_options = st.multiselect(
@@ -112,12 +132,7 @@ def display():
     # Display results
     if 'training_results' in st.session_state:
         results = st.session_state['training_results']
-        
-        st.subheader("📊 Performance Summary (All Feature/Model Combinations)")
-        perf_df = results["performance_summary"].copy()
-        st.dataframe(perf_df.style.highlight_max(subset=['Accuracy'], color='lightgreen'), 
-                    use_container_width=True, height=400)
-        
+                
         st.subheader("🏆 Best Model Details")
         best = results["best_model"]
         
@@ -163,21 +178,13 @@ def display():
                        f"{v:.3f}", ha="center", fontweight='bold')
             st.pyplot(fig, use_container_width=True)
             plt.close(fig)
-        
-        # Confusion matrix
-        st.subheader("🔍 Confusion Matrix (Best Model)")
-        cm = confusion_matrix(best["y_test"], best["y_pred"])
-        fig, ax = plt.subplots(figsize=(7, 6))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="RdYlGn",
-                   xticklabels=["KO", "OK"], yticklabels=["KO", "OK"],
-                   ax=ax, cbar_kws={'label': 'Count'})
-        ax.set_ylabel("True Label", fontweight='bold')
-        ax.set_xlabel("Predicted Label", fontweight='bold')
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
-        
-        # Classification report
-        st.subheader("📋 Detailed Classification Report")
-        report = classification_report(best["y_test"], best["y_pred"], 
-                                     target_names=["KO", "OK"], digits=4)
-        st.code(report, language="text")
+
+        # 📊 Performance Summary (All Feature/Model Combinations) at bottom
+        st.subheader("📊 Performance Summary (All Feature/Model Combinations)")
+        perf_df = results["performance_summary"].copy()
+        st.dataframe(
+            perf_df.style.highlight_max(subset=['Accuracy'], color='lightgreen'),
+            use_container_width=True,
+            height=400,
+        )
+    

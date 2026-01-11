@@ -32,8 +32,8 @@ def display():
                 # Analysis method selection
                 analysis_types = st.multiselect(
                     "Select analysis methods:",
-                    options=['Statistical Tests', 'Machine Learning Feature Importance', 'Combined Analysis'],
-                    default=['Combined Analysis'],
+                    options=['Statistical Tests', 'Machine Learning Feature Importance'],
+                    default=['Statistical Tests', 'Machine Learning Feature Importance'],
                     help="Choose which analysis methods to apply"
                 )
                 
@@ -60,7 +60,7 @@ def display():
                             
                             # Run ML feature importance if needed
                             ml_results = None
-                            if 'Machine Learning Feature Importance' in analysis_types or 'Combined Analysis' in analysis_types:
+                            if 'Machine Learning Feature Importance' in analysis_types:
                                 try:
                                     st.info("🔄 Training AutoGluon models for feature importance... (this may take a while)")
                                     ml_analyzer = FeatureImportanceAnalyzer(random_state=42)
@@ -116,13 +116,10 @@ def display():
                 
                 # Feature Rankings Tabs - dynamically create based on selected methods
                 tab_names = []
-                if 'Combined Analysis' in analysis_types:
-                    tab_names.extend(["🏆 Combined Ranking", "📊 Statistical Analysis", "🤖 ML Feature Importance"])
-                else:
-                    if 'Statistical Tests' in analysis_types:
-                        tab_names.append("📊 Statistical Analysis")
-                    if 'Machine Learning Feature Importance' in analysis_types:
-                        tab_names.append("🤖 ML Feature Importance")
+                if 'Statistical Tests' in analysis_types:
+                    tab_names.append("📊 Statistical Analysis")
+                if 'Machine Learning Feature Importance' in analysis_types:
+                    tab_names.append("🤖 ML Feature Importance")
                 
                 # Create tabs based on selected methods
                 if not tab_names:
@@ -134,43 +131,10 @@ def display():
                     tab_idx = 0
                     feature_ranking = results.get('feature_ranking', [])[:top_n]
                     
-                    # Combined Ranking (only if Combined Analysis selected)
-                    if 'Combined Analysis' in analysis_types:
-                        with tabs[tab_idx]:
-                            st.subheader("🏆 Combined Feature Ranking")
-                            st.write("Features ranked by combining statistical significance and composite scores")
-                            
-                            if feature_ranking:
-                                ranking_df = pd.DataFrame(feature_ranking)
-                                # Format numeric columns
-                                for col in ['p_value', 'effect_size', 'composite_score', 'difference_ratio']:
-                                    if col in ranking_df.columns:
-                                        ranking_df[col] = ranking_df[col].round(6)
-                                st.dataframe(ranking_df, height=400, use_container_width=True)
-                                
-                                # Visualization
-                                fig, ax = plt.subplots(figsize=(10, 6))
-                                features = [item['feature'] for item in feature_ranking]
-                                scores = [item.get('composite_score', 0) for item in feature_ranking]
-                                
-                                bars = ax.barh(features[::-1], scores[::-1])
-                                ax.set_xlabel('Composite Score')
-                                ax.set_title(f'Top {len(features)} Features by Combined Score')
-                                
-                                # Color bars by score
-                                if max(scores) > 0:
-                                    for i, bar in enumerate(bars):
-                                        bar.set_color(plt.cm.RdYlBu_r(scores[::-1][i] / max(scores)))
-                                
-                                plt.tight_layout()
-                                st.pyplot(fig, use_container_width=True)
-                                plt.close(fig)
-                            else:
-                                st.info("No combined ranking available")
-                        tab_idx += 1
+
                     
                     # Statistical Analysis
-                    if 'Statistical Tests' in analysis_types or 'Combined Analysis' in analysis_types:
+                    if 'Statistical Tests' in analysis_types:
                         with tabs[tab_idx]:
                             st.subheader("📊 Statistical Analysis Results")
                             
@@ -203,6 +167,11 @@ def display():
                                 ax.axvline(-np.log10(0.05), color='red', linestyle='--', alpha=0.7, label='p=0.05 threshold')
                                 ax.legend()
                                 
+                                # Color gradient based on significance
+                                if max(neg_log_p) > 0:
+                                    for i, bar in enumerate(bars):
+                                        bar.set_color(plt.cm.viridis(neg_log_p[::-1][i] / max(neg_log_p)))
+                                
                                 plt.tight_layout()
                                 st.pyplot(fig, use_container_width=True)
                                 plt.close(fig)
@@ -211,7 +180,7 @@ def display():
                         tab_idx += 1
                     
                     # ML Feature Importance
-                    if 'Machine Learning Feature Importance' in analysis_types or 'Combined Analysis' in analysis_types:
+                    if 'Machine Learning Feature Importance' in analysis_types:
                         with tabs[tab_idx]:
                             st.subheader("🤖 AutoGluon ML Feature Importance")
                             
@@ -288,7 +257,7 @@ def display():
                                 else:
                                     st.info("No feature importance data available")
                             else:
-                                st.info("🔄 ML Feature importance analysis not yet completed. Select 'Machine Learning Feature Importance' or 'Combined Analysis' and run again.")
+                                st.info("🔄 ML Feature importance analysis not yet completed. Select 'Machine Learning Feature Importance' and run again.")
         else:
             st.warning("OK/KO labels not found. Please complete preprocessing first.")
     else:
