@@ -37,7 +37,7 @@ def display():
         if st.button("🗑️ Clear Chat", use_container_width=True):
             st.session_state.chat_history = []
             if hasattr(st.session_state.agent, 'clear_conversation'):
-                st.session_state.agent.clear_conversation()
+                st.session_state.agent.conversation.clear_history()
             st.success("Chat cleared!")
             st.rerun()
     

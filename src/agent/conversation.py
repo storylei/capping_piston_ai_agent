@@ -103,6 +103,7 @@ When the user asks for analysis:
         
         return messages
     
+    # [Reserved] Not currently used - for retrieving complete conversation history with metadata
     def get_full_history(self) -> List[Dict[str, Any]]:
         """Get complete conversation history with metadata"""
         return self.messages.copy()
@@ -111,6 +112,7 @@ When the user asks for analysis:
         """Clear conversation history"""
         self.messages = []
     
+    # [Reserved] Not currently used - for future AI mode switching
     def update_system_prompt(self, new_prompt: str):
         """Update the system prompt"""
         self.system_prompt = new_prompt
@@ -119,6 +121,7 @@ When the user asks for analysis:
         """Add context information to system prompt"""
         self.system_prompt += f"\n\nCurrent Context:\n{context}"
     
+    # [Reserved] Not currently used - for retrieving recent N messages
     def get_last_n_messages(self, n: int) -> List[Dict[str, Any]]:
         """Get last n messages"""
         return self.messages[-n:] if len(self.messages) >= n else self.messages.copy()
