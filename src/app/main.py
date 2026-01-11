@@ -54,6 +54,7 @@ def initialize_session_state():
             llm_backend=llm_backend,
             llm_model=llm_model,
             api_key=api_key,
+            enable_llm_fallback_chat=st.session_state.get('enable_llm_fallback', True),
             enable_llm_interpretation=st.session_state.get('enable_llm_interpretation', False)
         )
     

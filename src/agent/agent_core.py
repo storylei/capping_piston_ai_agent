@@ -96,8 +96,10 @@ class StatisticalAgent:
         if intent["type"] == "unknown":
             if self.enable_llm_fallback_chat:
                 return self._fallback_chat(user_message)
+            # Generate dynamic example based on actual columns
+            example_col = self.current_data.columns[0] if len(self.current_data.columns) > 0 else "column_name"
             return {
-                "response": "⚠️ I couldn't understand the request. Try: 'mean and variance of sensor_2', or 'plot histogram of sensor_11'.",
+                "response": f"⚠️ I couldn't understand the request. Try: 'mean and variance of {example_col}', or 'plot histogram of {example_col}'.",
                 "plots": [],
                 "tool_calls": None,
                 "tool_results": [],
@@ -158,6 +160,88 @@ class StatisticalAgent:
                 matched.append(col)
         return matched
 
+    def _collect_feature_names(self, source: Any) -> List[str]:
+        """Extract feature names from various analysis result structures."""
+        names: List[str] = []
+        if not source:
+            return names
+
+        if isinstance(source, list):
+            for item in source:
+                if isinstance(item, dict) and "feature" in item:
+                    names.append(item["feature"])
+                elif isinstance(item, str):
+                    names.append(item)
+        elif isinstance(source, dict):
+            # Some sources may store features keyed by rank
+            for value in source.values():
+                if isinstance(value, (str, list, dict)):
+                    names.extend(self._collect_feature_names(value))
+        return names
+
+    def _get_analysis_based_columns(self, limit: int = 3) -> List[str]:
+        """Return top feature names derived from previous analysis results."""
+        if not self.analysis_results or self.current_data is None:
+            return []
+
+        candidates: List[str] = []
+
+        def add_candidates(items: Any):
+            for name in self._collect_feature_names(items):
+                if name in self.current_data.columns and name not in candidates:
+                    candidates.append(name)
+
+        # Direct feature ranking (statistical analyzer)
+        add_candidates(self.analysis_results.get("feature_ranking"))
+
+        # Statistical analysis nested structure
+        stat_analysis = self.analysis_results.get("statistical_analysis")
+        if isinstance(stat_analysis, dict):
+            add_candidates(stat_analysis.get("feature_ranking"))
+
+        # Summary may include top lists
+        summary = self.analysis_results.get("summary")
+        if isinstance(summary, dict):
+            add_candidates(summary.get("top_statistical_features"))
+            add_candidates(summary.get("top_ml_features"))
+            add_candidates(summary.get("consensus_features"))
+
+        # ML feature importance structures
+        ml_results = self.analysis_results.get("ml_feature_importance") or self.analysis_results.get("feature_importance")
+        if isinstance(ml_results, dict):
+            feature_importance = ml_results.get("feature_importance") or {}
+            add_candidates(feature_importance.get("feature_ranking"))
+
+        return candidates[:limit]
+
+    def _get_default_columns(self, limit: int = 1) -> List[str]:
+        """Fallback column selection prioritizing analysis insights, then numeric columns."""
+        if self.current_data is None:
+            return []
+
+        defaults: List[str] = []
+
+        # Prefer columns highlighted by previous analyses
+        defaults.extend(self._get_analysis_based_columns(limit=limit * 2))
+
+        # Fallback to numeric columns (excluding label)
+        numeric_cols = [
+            col
+            for col in self.current_data.select_dtypes(include=[np.number]).columns
+            if col != "OK_KO_Label"
+        ]
+        for col in numeric_cols:
+            if col not in defaults:
+                defaults.append(col)
+
+        return defaults[:limit]
+
+    def _resolve_columns(self, matched: List[str], limit: int = 1) -> List[str]:
+        """Use matched columns or fall back to defaults when not provided."""
+        if matched:
+            return matched[:limit]
+        return self._get_default_columns(limit=limit)
+
     def _extract_metrics(self, text: str) -> Optional[List[str]]:
         """Return a list of requested metrics or None meaning 'full summary'."""
         metric_map = {
@@ -193,9 +277,10 @@ class StatisticalAgent:
         # "fft", "frequency spectrum", "show fft for X", "plot frequency of X"
         fft_keywords = ["fft", "frequency spectrum", "fourier", "spectrum"]
         if any(k in text for k in fft_keywords):
-            if not cols:
+            resolved_cols = self._resolve_columns(cols, limit=1)
+            if not resolved_cols:
                 return {"type": "unknown"}
-            return {"type": "tool", "tool": "plot_frequency_spectrum", "args": {"column": cols[0]}}
+            return {"type": "tool", "tool": "plot_frequency_spectrum", "args": {"column": resolved_cols[0]}}
 
         # Detect if user wants to filter by OK or KO group
         filter_group = None
@@ -206,13 +291,19 @@ class StatisticalAgent:
 
         # Time series (explicit phrase only)
         if "time series" in text or "timeseries" in text:
-            if not cols:
+            resolved_cols = self._resolve_columns(cols, limit=1)
+            if not resolved_cols:
                 return {"type": "unknown"}
-            return {"type": "tool", "tool": "plot_time_series", "args": {"column": cols[0], "separate_groups": True, "filter_group": filter_group}}
+            return {
+                "type": "tool",
+                "tool": "plot_time_series",
+                "args": {"column": resolved_cols[0], "separate_groups": True, "filter_group": filter_group},
+            }
 
         # Distribution plot: require explicit plot-type words (NOT just "show")
         if any(k in text for k in ["histogram", "distribution", "boxplot", "box plot", "violin", "kde", "density"]):
-            if not cols:
+            resolved_cols = self._resolve_columns(cols, limit=1)
+            if not resolved_cols:
                 return {"type": "unknown"}
             plot_type = "histogram"
             if "boxplot" in text or "box plot" in text:
@@ -221,7 +312,11 @@ class StatisticalAgent:
                 plot_type = "violin"
             elif "kde" in text or "density" in text:
                 plot_type = "kde"
-            return {"type": "tool", "tool": "plot_distribution", "args": {"column": cols[0], "plot_type": plot_type, "filter_group": filter_group}}
+            return {
+                "type": "tool",
+                "tool": "plot_distribution",
+                "args": {"column": resolved_cols[0], "plot_type": plot_type, "filter_group": filter_group},
+            }
 
         # Statistics: detect numeric words
         stat_words = ["mean", "median", "mode", "variance", "std", "standard deviation", "summary", "statistics", "min", "max", "count", "average"]
@@ -234,8 +329,10 @@ class StatisticalAgent:
             }
 
         # Compare multiple features (explicit)
-        if "compare" in text and len(cols) >= 2:
-            return {"type": "tool", "tool": "compare_features", "args": {"columns": cols[:6]}}
+        if "compare" in text:
+            resolved_cols = self._resolve_columns(cols, limit=6)
+            if len(resolved_cols) >= 2:
+                return {"type": "tool", "tool": "compare_features", "args": {"columns": resolved_cols[:6]}}
 
         return {"type": "unknown"}
 
@@ -326,27 +423,33 @@ class StatisticalAgent:
             
             context = "\n".join(context_parts)
             
+            # Get current dataset context
+            dataset_context = "a dataset with OK/KO labels"
+            if self.current_data is not None:
+                cols = [c for c in self.current_data.columns if c != 'OK_KO_Label']
+                if cols:
+                    dataset_context = f"a dataset with features: {', '.join(cols[:5])}"
+            
             # Domain-specific interpretation prompt
-            interpretation_prompt = f"""You are an expert data analyst interpreting results from an industrial sensor analysis tool.
+            interpretation_prompt = f"""You are an expert data analyst interpreting results from {dataset_context}.
 
-The data is from NASA C-MAPSS turbofan engine degradation dataset:
-- OK = healthy engine (RUL > threshold)
-- KO = degraded engine (RUL <= threshold, approaching failure)
-- Sensors measure temperature, pressure, speed, etc.
+The data has OK/KO labels where:
+- OK = healthy/normal state
+- KO = degraded/anomalous state
 
 Here are the EXACT results from the analysis tool (DO NOT change any numbers):
 
 {context}
 
 Provide a brief (2-3 sentences) expert interpretation:
-1. What do these numbers mean in the context of engine health?
+1. What do these numbers mean in the context of the data?
 2. Is there a significant difference between OK and KO groups?
 3. What actionable insight can be drawn?
 
 IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics."""
 
             messages = [
-                {"role": "system", "content": "You are a predictive maintenance expert. Interpret analysis results concisely."},
+                {"role": "system", "content": "You are a data analysis expert. Interpret analysis results concisely."},
                 {"role": "user", "content": interpretation_prompt}
             ]
             
@@ -370,12 +473,19 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
     def _fallback_chat(self, user_message: str) -> Dict[str, Any]:
         messages = self.conversation.get_messages_for_llm()
 
+        # Get example column name from current dataset
+        example_col = "column_name"
+        if self.current_data is not None and len(self.current_data.columns) > 0:
+            # Get first non-label column
+            cols = [c for c in self.current_data.columns if c != 'OK_KO_Label']
+            example_col = cols[0] if cols else self.current_data.columns[0]
+
         # HARD safety prompt: forbid numerical claims
         system_prompt = (
-            "You are a helpful assistant for analyzing industrial sensor data (like NASA C-MAPSS turbofan engine data). "
+            f"You are a helpful assistant for analyzing datasets with OK/KO labels. "
             "Do NOT compute or invent any numeric results. "
-            "If user asks for statistics or plots, instruct them how to ask using tool keywords "
-            "like: 'mean variance sensor_2', 'histogram sensor_11', 'fft sensor_7', 'time series for KO samples'."
+            f"If user asks for statistics or plots, instruct them how to ask using tool keywords "
+            f"like: 'mean variance {example_col}', 'histogram {example_col}', 'fft {example_col}', 'time series for KO samples'."
         )
         messages.append({"role": "system", "content": system_prompt})
 
@@ -383,7 +493,7 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
         content = (llm_response.get("content") or "").strip()
 
         if not content:
-            content = "I couldn't parse that. Try: 'mean and variance of sensor_2', or 'plot histogram of sensor_11'."
+            content = f"I couldn't parse that. Try: 'mean and variance of {example_col}', or 'plot histogram of {example_col}'."
 
         self.conversation.add_message("assistant", content)
         return {"response": content, "plots": [], "tool_calls": None, "tool_results": []}

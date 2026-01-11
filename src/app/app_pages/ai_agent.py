@@ -34,7 +34,7 @@ def display():
             st.info(f"🧠 **Interpretation**: {'Enabled' if interpretation else 'Disabled'}")
     
     with col3:
-        if st.button("🗑️ Clear Chat", use_container_width=True):
+        if st.button("🗑️ Clear Chat", width="stretch"):
             st.session_state.chat_history = []
             if hasattr(st.session_state.agent, 'clear_conversation'):
                 st.session_state.agent.conversation.clear_history()
@@ -45,32 +45,47 @@ def display():
     st.markdown("---")
     
     # Update agent context
+    data_changed = False
     if st.session_state.agent.current_data is None or \
        st.session_state.agent.current_data.shape != processed_df.shape:
+        # Data changed - clear chat history to avoid confusion
+        st.session_state.chat_history = []
+        st.session_state.agent.conversation.clear_history()
         st.session_state.agent.set_data_context(processed_df)
+        data_changed = True
+    
+    if data_changed:
+        st.info("🔄 New dataset detected. Chat history has been cleared.")
+        # Force rerun to refresh the interface
+        st.rerun()
     
     if 'analysis_results' in st.session_state:
         st.session_state.agent.set_analysis_results(st.session_state['analysis_results'])
     
-    # Example queries
+    # Example queries - dynamic based on actual columns
     st.markdown("### 💡 Example Queries:")
+    
+    # Get actual column names (excluding OK_KO_Label)
+    available_cols = [col for col in processed_df.columns if col != 'OK_KO_Label']
+    example_col = available_cols[0] if available_cols else 'feature_name'
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("""
+        st.markdown(f"""
         **Statistical Analysis:**
         - "Show statistical summary for all features"
-        - "What's the mean Age difference between OK and KO?"
+        - "What's the mean {example_col} difference between OK and KO?"
         - "Get feature importance ranking"
         """)
     
     with col2:
-        st.markdown("""
+        st.markdown(f"""
         **Visualization:**
-        - "Plot histogram of sensor_11"
+        - "Plot histogram of {example_col}"
         - "Show time series for KO samples"
-        - "Plot FFT for sensor_7"
-        - "Compare distribution of Fare between OK and KO"
+        - "Plot FFT for {example_col}"
+        - "Compare distribution between OK and KO"
         """)
     
     st.markdown("---")
@@ -83,8 +98,6 @@ def display():
         
         with st.spinner("🤔 Thinking..."):
             try:
-                plt.close('all')
-                
                 response = st.session_state.agent.chat(user_input)
                 
                 st.session_state.chat_history.append({
@@ -104,6 +117,12 @@ def display():
         for msg in reversed(st.session_state.chat_history):
             with st.chat_message(msg['role']):
                 st.markdown(msg['content'])
-                if msg.get('plots'):
-                    for plot_fig in msg['plots']:
-                        st.pyplot(plot_fig)
+                # Display plots if any
+                plots = msg.get('plots', [])
+                if plots:
+                    for plot_fig in plots:
+                        if plot_fig is not None:
+                            try:
+                                st.pyplot(plot_fig, use_container_width=False)
+                            except Exception as e:
+                                st.error(f"Failed to display plot: {e}")
