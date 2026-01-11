@@ -74,7 +74,7 @@ def display():
         max_available = len(feature_names)
         
         # 从3到max_available生成所有可选项
-        valid_options = list(range(3, max_available + 1))
+        valid_options = list(range(1, max_available + 1))
         
         # 默认选择3个均匀分布的值
         default_counts = [3, max_available // 2, max_available] if max_available >= 3 else [max_available]

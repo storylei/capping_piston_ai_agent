@@ -88,35 +88,32 @@ def display():
     # Validation
     can_save = not backend_config["requires_api_key"] or api_key
     
-    # Save button
-    if st.button("💾 Save Configuration", type="primary", disabled=not can_save):
-        try:
-            st.session_state.enable_llm_interpretation = enable_interpretation
-            st.session_state.llm_backend = llm_backend
-            st.session_state.llm_model = backend_config['default_model']
-            st.session_state.llm_api_key = api_key
-            
-            st.session_state.agent = StatisticalAgent(
-                llm_backend=llm_backend,
-                llm_model=backend_config['default_model'],
-                api_key=api_key,
-                enable_llm_interpretation=enable_interpretation
-            )
-            
-            st.success(f"✅ Configured: {backend_config['name']}")
-            st.session_state.config_complete = True
-            st.session_state.config_step = 5
-            st.balloons()
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Failed: {str(e)}")
-    
-    if not can_save:
-        st.warning("⚠️ API key required")
-    
-    # Navigation
+    # Primary actions: Save and Skip (same row)
     col1, col2 = st.columns([1, 1])
     with col1:
+        if st.button("💾 Save Configuration", type="primary", disabled=not can_save):
+            try:
+                st.session_state.enable_llm_interpretation = enable_interpretation
+                st.session_state.llm_backend = llm_backend
+                st.session_state.llm_model = backend_config['default_model']
+                st.session_state.llm_api_key = api_key
+                
+                st.session_state.agent = StatisticalAgent(
+                    llm_backend=llm_backend,
+                    llm_model=backend_config['default_model'],
+                    api_key=api_key,
+                    enable_llm_interpretation=enable_interpretation
+                )
+                
+                st.success(f"✅ Configured: {backend_config['name']}")
+                st.session_state.config_complete = True
+                st.session_state.config_step = 5
+                st.balloons()
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Failed: {str(e)}")
+    
+    with col2:
         if st.button("⏭️ Skip (Use Ollama)"):
             st.session_state.enable_llm_interpretation = False
             st.session_state.llm_backend = "ollama"
@@ -125,7 +122,11 @@ def display():
             st.session_state.config_complete = True
             st.session_state.config_step = 5
             st.rerun()
-    with col2:
-        if st.button("← Back"):
-            st.session_state.config_step = 3
-            st.rerun()
+    
+    if not can_save:
+        st.warning("⚠️ API key required")
+    
+    # Back navigation (separate row)
+    if st.button("← Back"):
+        st.session_state.config_step = 3
+        st.rerun()

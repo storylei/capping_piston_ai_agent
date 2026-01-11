@@ -39,7 +39,7 @@ def display():
                 
                 # Top features to display (dynamic bounds based on available features)
                 max_features = max(1, len(processed_df.columns) - 1)  # exclude label
-                min_features = min(5, max_features)
+                min_features = min(1, max_features)
                 default_top_n = min(10, max_features)
                 top_n = st.slider(
                     "Top N features to display:",
