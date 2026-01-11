@@ -24,42 +24,21 @@ def display():
         return
     
     df = st.session_state.current_data
-    
-    # Show current config - conditional based on classification method
-    if 'confirmed_threshold_value' in st.session_state:
-        # Threshold-based method
-        threshold_col = st.session_state.label_col
-        threshold_value = st.session_state.confirmed_threshold_value
-        
-        # Calculate preview
-        ok_count = (df[threshold_col] > threshold_value).sum()
-        ko_count = (df[threshold_col] <= threshold_value).sum()
-        
-        st.info(
-            f"**Data**: {df.shape[0]} rows × {df.shape[1]} cols\n"
-            f"**Classification Method**: By Threshold\n"
-            f"**Label Column**: {st.session_state.label_col}\n"
-            f"**Threshold Value**: {st.session_state.confirmed_threshold_value:.2f}"
-        )
-        
-        # Show OK/KO counts
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("✅ OK Samples", ok_count)
-        with col2:
-            st.metric("❌ KO Samples", ko_count)
-        with col3:
-            st.metric("Total", len(df))
-            
-    else:
-        # Values-based method
-        st.info(
-            f"**Data**: {df.shape[0]} rows × {df.shape[1]} cols\n"
-            f"**Classification Method**: By Values\n"
-            f"**Label Column**: {st.session_state.label_col}\n"
-            f"**OK Values**: {st.session_state.get('ok_values', [])}\n"
-            f"**KO Values**: {st.session_state.get('ko_values', [])}"
-        )
+
+    if 'ok_values' not in st.session_state or 'ko_values' not in st.session_state:
+        st.warning("⚠️ Missing OK/KO configuration. Please complete Step 2.")
+        if st.button("← Back to Step 2", key="back_step2_from_step3_missing_labels"):
+            st.session_state.config_step = 2
+            st.rerun()
+        return
+
+    st.info(
+        f"**Data**: {df.shape[0]} rows × {df.shape[1]} cols\n"
+        f"**Classification Method**: By Values\n"
+        f"**Label Column**: {st.session_state.label_col}\n"
+        f"**OK Values**: {st.session_state.get('ok_values', [])}\n"
+        f"**KO Values**: {st.session_state.get('ko_values', [])}"
+    )
     
     # Preprocessing options (3 columns)
     col1, col2, col3 = st.columns(3)
@@ -139,24 +118,12 @@ def display():
                     preprocessor = DataPreprocessor()
                     st.session_state.data_preprocessor = preprocessor
                 
-                # Handle two classification methods
-                # Method 1: threshold-based (if confirmed_threshold_value is in session_state)
-                if 'confirmed_threshold_value' in st.session_state:
-                    # Create labels based on threshold
-                    threshold_col = st.session_state.label_col
-                    threshold_value = st.session_state.confirmed_threshold_value
-                    processed_df = df.copy()
-                    processed_df['OK_KO_Label'] = (processed_df[threshold_col] > threshold_value).astype(str)
-                    processed_df['OK_KO_Label'] = processed_df['OK_KO_Label'].map({'True': 'OK', 'False': 'KO'})
-                    processed_df = processed_df.drop(columns=[threshold_col])
-                else:
-                    # Method 2: Create labels based on selected values
-                    processed_df = preprocessor.create_ok_ko_labels(
-                        df=df,
-                        label_col=st.session_state.label_col,
-                        ok_values=st.session_state.ok_values,
-                        drop_original=True
-                    )
+                processed_df = preprocessor.create_ok_ko_labels(
+                    df=df,
+                    label_col=st.session_state.label_col,
+                    ok_values=st.session_state.ok_values,
+                    drop_original=True
+                )
                 
                 # Step 2: Handle missing values - map selection to per-column strategy
                 if selected_missing_strategy == 'auto':

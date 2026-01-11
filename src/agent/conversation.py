@@ -19,36 +19,32 @@ class ConversationManager:
         """
         self.max_history = max_history
         self.messages: List[Dict[str, Any]] = []
-        self.system_prompt = self._create_system_prompt()
+        self.base_system_prompt = self._create_system_prompt()
+        self.current_context = ""  # Track current data context separately
+        self.system_prompt = self.base_system_prompt
         
     def _create_system_prompt(self) -> str:
         """Create the system prompt for the AI agent"""
-        return """You are a Statistical Analysis AI Agent specialized in analyzing industrial sensor datasets with OK/KO labels (e.g., NASA C-MAPSS turbofan engine degradation data).
+        return """You are a Statistical Analysis AI Agent specialized in analyzing datasets with OK/KO labels.
 
 Your capabilities include:
-1. Statistical Analysis: Calculate mean, median, mode, standard deviation, variance for sensor features
-2. Feature Importance: Identify which sensors best discriminate between OK (healthy) and KO (degrading) states
+1. Statistical Analysis: Calculate mean, median, mode, standard deviation, variance for features
+2. Feature Importance: Identify which features best discriminate between OK and KO states
 3. Data Visualization:
-   - Histograms (sensor value distribution)
+   - Histograms (feature value distribution)
    - Box plots (show quartiles and outliers)
    - Violin plots (show distribution shape)
    - KDE plots (smooth density curves)
-   - Time series plots (sensor readings over time/cycles)
+   - Time series plots (feature readings over time/cycles)
    - FFT/Frequency spectrum plots (frequency domain analysis)
-4. Multi-feature Comparison: Compare multiple sensors side by side
+4. Multi-feature Comparison: Compare multiple features side by side
 5. Group Filtering: Show data for OK samples only or KO samples only
 
-Example queries:
-- 'Show mean and std for sensor_2'
-- 'Plot histogram of sensor_11'
-- 'Show time series for KO samples of sensor_7'
-- 'Plot FFT for sensor_4'
-- 'Get feature importance ranking'
-
 When the user asks for analysis:
-1. Understand their intent
+1. Understand their intent based on the CURRENT DATASET CONTEXT provided below
 2. Use appropriate visualization for the data type
-3. Present clear, informative results with OK/KO comparisons"""
+3. Present clear, informative results with OK/KO comparisons
+4. ALWAYS refer to the actual column names from the current dataset, NOT examples from other datasets"""
     
     def add_message(self, role: str, content: str, metadata: Dict = None):
         """
@@ -118,8 +114,10 @@ When the user asks for analysis:
         self.system_prompt = new_prompt
     
     def add_context(self, context: str):
-        """Add context information to system prompt"""
-        self.system_prompt += f"\n\nCurrent Context:\n{context}"
+        """Add/replace context information to system prompt"""
+        self.current_context = context
+        # Rebuild system prompt with new context (replacing old context)
+        self.system_prompt = self.base_system_prompt + f"\n\nCurrent Dataset Context:\n{context}"
     
     # [Reserved] Not currently used - for retrieving recent N messages
     def get_last_n_messages(self, n: int) -> List[Dict[str, Any]]:

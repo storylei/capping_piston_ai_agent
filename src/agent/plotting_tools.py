@@ -325,7 +325,6 @@ class PlottingTools:
             if group_by not in df.columns:
                 return {"success": False, "error": f"Group column '{group_by}' not found"}
 
-            plt.close("all")
             fig = plt.figure(figsize=(10, 6))
             ax = fig.add_subplot(111)
 
