@@ -61,6 +61,38 @@ def display():
     
     if 'analysis_results' in st.session_state:
         st.session_state.agent.set_analysis_results(st.session_state['analysis_results'])
+        
+        # Debug info: show what analysis results are available
+        with st.expander("📊 Available Analysis Results", expanded=False):
+            results = st.session_state['analysis_results']
+            
+            # Check for feature ranking
+            has_feature_ranking = False
+            feature_count = 0
+            
+            if 'feature_ranking' in results and results['feature_ranking']:
+                has_feature_ranking = True
+                feature_count = len(results['feature_ranking'])
+                st.success(f"✅ Feature ranking available ({feature_count} features)")
+            
+            if 'ml_feature_importance' in results and results['ml_feature_importance']:
+                ml_fi = results['ml_feature_importance']
+                if 'feature_importance' in ml_fi and ml_fi['feature_importance']:
+                    fi_data = ml_fi['feature_importance']
+                    if 'feature_ranking' in fi_data and fi_data['feature_ranking']:
+                        if not has_feature_ranking:
+                            has_feature_ranking = True
+                            feature_count = len(fi_data['feature_ranking'])
+                        st.success(f"✅ ML feature importance available ({len(fi_data['feature_ranking'])} features)")
+            
+            if 'statistical_analysis' in results:
+                st.info("✅ Statistical analysis results available")
+            
+            if not has_feature_ranking:
+                st.warning("⚠️ No feature ranking found in analysis results")
+                st.caption("Available keys: " + ", ".join(results.keys()))
+    else:
+        st.warning("⚠️ No analysis results in session state. Please run Advanced Analysis first.")
     
     # Example queries - dynamic based on actual columns
     st.markdown("### 💡 Example Queries:")

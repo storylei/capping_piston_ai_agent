@@ -1,5 +1,5 @@
 """
-Plotting Tools Module (Interpretation-Ready Version)
+Plotting Tools Module (Interpretation-Ready + Robust Time/Group Handling)
 Provides visualization capabilities for statistical analysis.
 
 Key design:
@@ -7,6 +7,13 @@ Key design:
   1) 'figure' : matplotlib Figure
   2) 'summary': structured facts for deterministic interpretation
 - Agent should NOT ask LLM to infer numbers from a figure.
+
+Key improvements (dataset-agnostic):
+1) Robust time axis detection:
+   - If a time-like column is numeric (seconds/cycles/sample index), DO NOT parse as datetime.
+   - Only parse to datetime for non-numeric columns (strings/datetime).
+2) Robust group column resolution:
+   - If default group_by doesn't exist, try common label columns (OK_KO_Label, fault, label, class, target, y).
 """
 
 from __future__ import annotations
@@ -32,25 +39,47 @@ class PlottingTools:
     # -----------------------------
     # Helpers
     # -----------------------------
+    def _resolve_group_column(self, df: pd.DataFrame, group_by: str) -> Optional[str]:
+        """Return an existing group/label column name or None (dataset-agnostic)."""
+        if group_by in df.columns:
+            return group_by
+        for cand in ["OK_KO_Label", "fault", "label", "class", "target", "y"]:
+            if cand in df.columns:
+                return cand
+        return None
+
     def _find_time_axis(self, df: pd.DataFrame) -> Tuple[Optional[pd.Series], Optional[str]]:
         """
         Try to find a real time axis:
+          0) df.attrs['time_column'] if provided
+          0.5) common cycle columns: time_cycles/cycle/cycles/time_cycle
           1) DatetimeIndex
           2) datetime dtype column
-          3) column name hints: time/date/timestamp/datetime + parseable
-          4) Check for C-MAPSS time_cycles column
+          3) time-like name hints:
+             - if numeric -> treat as numeric axis (DO NOT to_datetime)
+             - else -> try pd.to_datetime
         """
-        # 0) Check DataFrame attrs for marked time column (C-MAPSS)
-        time_col_attr = getattr(df, 'attrs', {}).get('time_column')
+        # 0) DataFrame attrs for marked time column
+        time_col_attr = getattr(df, "attrs", {}).get("time_column")
         if time_col_attr and time_col_attr in df.columns:
-            return df[time_col_attr], f"Time Cycles ({time_col_attr})"
-        
-        # Also check for common cycle/time columns in industrial data
+            s = df[time_col_attr]
+            # numeric cycles/time
+            if pd.api.types.is_numeric_dtype(s):
+                x = pd.to_numeric(s, errors="coerce")
+                if x.notna().sum() > 0:
+                    return x, f"Time ({time_col_attr})"
+            return s, f"Time ({time_col_attr})"
+
+        # 0.5) common cycle/time columns
         cycle_hints = ["time_cycles", "cycle", "cycles", "time_cycle"]
         for c in df.columns:
             if str(c).lower() in cycle_hints:
-                return df[c], f"Cycles ({c})"
-        
+                s = df[c]
+                x = pd.to_numeric(s, errors="coerce")
+                if x.notna().sum() > 0:
+                    return x, f"Cycles ({c})"
+                return s, f"Cycles ({c})"
+
         # 1) DatetimeIndex
         if isinstance(df.index, pd.DatetimeIndex):
             return pd.Series(df.index), "Time (DatetimeIndex)"
@@ -61,12 +90,21 @@ class PlottingTools:
             c = datetime_cols[0]
             return df[c], f"Time ({c})"
 
-        # 3) name hints + parseable
-        hints = ["timestamp", "time", "date", "datetime"]
+        # 3) name hints + parseable / numeric-safe
+        hints = ["timestamp", "time", "date", "datetime", "elapsed", "duration"]
         hint_cols = [c for c in df.columns if any(h in str(c).lower() for h in hints)]
         for c in hint_cols:
+            s = df[c]
+
+            # ✅ numeric time-like axis: keep numeric, DO NOT parse to datetime
+            if pd.api.types.is_numeric_dtype(s):
+                x = pd.to_numeric(s, errors="coerce")
+                if x.notna().sum() > 0:
+                    return x, f"Time ({c})"
+
+            # ✅ non-numeric: try parse to datetime
             try:
-                parsed = pd.to_datetime(df[c], errors="coerce")
+                parsed = pd.to_datetime(s, errors="coerce")
                 if parsed.notna().sum() > 0:
                     return parsed, f"Time ({c})"
             except Exception:
@@ -74,13 +112,7 @@ class PlottingTools:
 
         return None, None
 
-    def _group_keys(self, df: pd.DataFrame, group_by: str) -> List[str]:
-        if group_by in df.columns:
-            return [str(x) for x in df[group_by].dropna().unique().tolist()]
-        return []
-
     def _numeric_stats(self, s: pd.Series) -> Dict[str, Any]:
-        """Return deterministic stats for a numeric series."""
         x = pd.to_numeric(s, errors="coerce").dropna()
         if x.empty:
             return {
@@ -111,18 +143,10 @@ class PlottingTools:
         }
 
     def _is_categorical(self, s: pd.Series) -> bool:
-        """Check if a series should be treated as categorical.
-        
-        For numerical data, we should NOT treat it as categorical just because
-        of low unique count - sensor data often has repeated values.
-        """
-        # Only object/string types are categorical
         if s.dtype == "object" or s.dtype.name == "category":
             return True
-        # Numeric types are NEVER categorical (sensors, measurements, etc.)
         if pd.api.types.is_numeric_dtype(s):
             return False
-        # Fallback for other types
         return False
 
     # -----------------------------
@@ -137,35 +161,34 @@ class PlottingTools:
         separate_groups: bool = True,
         allow_sample_index_fallback: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Plot time series. Uses real time axis if available, otherwise uses sample index with warning.
-        Also returns summary with per-group basic stats (mean/std etc).
-        """
         try:
             if column not in df.columns:
                 return {"success": False, "error": f"Column '{column}' not found in dataset"}
 
             time_values, time_label = self._find_time_axis(df)
             warning = None
+            is_true_time_series = True  # Track if this is real time data
 
             if time_values is None:
                 if not allow_sample_index_fallback:
-                    return {"success": False, "error": "No real time axis found (DatetimeIndex or datetime column)."}
+                    return {"success": False, "error": "No real time axis found (DatetimeIndex or time-like column)."}
                 time_values = pd.Series(df.index)
                 time_label = "Sample Index"
-                warning = "No real time axis detected; plotted against sample index (not true time)."
+                is_true_time_series = False
+                warning = "No real time axis detected; this is an index plot (not a true time series)."
 
             fig, ax = plt.subplots(figsize=(12, 6))
 
-            # Prepare summary stats
             summary_group_stats: Dict[str, Any] = {}
 
-            if separate_groups and group_by in df.columns:
-                groups = df[group_by].dropna().unique()
+            gb = self._resolve_group_column(df, group_by)
+
+            if separate_groups and gb is not None:
+                groups = df[gb].dropna().unique()
                 for g in groups:
-                    mask = df[group_by] == g
+                    mask = df[gb] == g
                     y = pd.to_numeric(df.loc[mask, column], errors="coerce")
-                    # Align x with mask if possible
+
                     if isinstance(time_values, pd.Series) and len(time_values) == len(df):
                         x = time_values.loc[mask]
                     else:
@@ -179,7 +202,6 @@ class PlottingTools:
                         alpha=0.7,
                         linewidth=1.5,
                     )
-
                     summary_group_stats[str(g)] = self._numeric_stats(y)
 
                 ax.legend()
@@ -192,20 +214,29 @@ class PlottingTools:
 
             ax.set_xlabel(time_label)
             ax.set_ylabel(column)
-            ax.set_title(title or f"Time Series Plot: {column}")
+            # Use appropriate title based on data type
+            if is_true_time_series:
+                plot_title = title or f"Time Series: {column}"
+            else:
+                plot_title = title or f"Index Plot: {column}"
+            ax.set_title(plot_title)
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
 
             summary = {
-                "plot_type": "time_series",
+                "plot_type": "time_series" if is_true_time_series else "index_plot",
+                "is_true_time_series": is_true_time_series,
                 "column": column,
                 "x_axis": time_label,
+                "has_groups": gb is not None and separate_groups,
+                "group_column": gb if (gb is not None and separate_groups) else None,
+                "groups": list(summary_group_stats.keys()) if summary_group_stats else [],
                 "group_stats": summary_group_stats,
             }
             if warning:
                 summary["note"] = warning
 
-            out = {"success": True, "figure": fig, "plot_type": "time_series", "column": column, "summary": summary}
+            out = {"success": True, "figure": fig, "plot_type": "time_series" if is_true_time_series else "index_plot", "column": column, "summary": summary}
             if warning:
                 out["warning"] = warning
             return out
@@ -221,16 +252,38 @@ class PlottingTools:
         df: pd.DataFrame,
         column: str,
         group_by: str = "OK_KO_Label",
-        sampling_rate: float = 1.0,
+        sampling_rate: float = None,  # Changed: None means no real sampling rate provided
         title: str = None,
         top_k_peaks: int = 5,
+        is_waveform: bool = None,  # New: explicitly declare if this is true waveform data
     ) -> Dict[str, Any]:
         """
-        Plot frequency spectrum (FFT). Returns dominant frequencies (top peaks) for each group.
+        Plot frequency spectrum (FFT).
+        
+        IMPORTANT:
+        - For true waveform data (sensor readings with known sampling rate), provide sampling_rate in Hz.
+        - For feature tables (aggregated/computed features), leave sampling_rate=None.
+          Result will be labeled as 'sample-index spectrum' without Hz units.
         """
         try:
             if column not in df.columns:
                 return {"success": False, "error": f"Column '{column}' not found in dataset"}
+            
+            # Auto-detect if data is waveform or feature table
+            if is_waveform is None:
+                # Only consider waveform if sampling_rate is explicitly provided AND > 1.0
+                # or if df has waveform attribute explicitly set to True
+                df_is_waveform = hasattr(df, 'attrs') and df.attrs.get('is_waveform', False)
+                has_real_sampling_rate = sampling_rate is not None and sampling_rate > 1.0
+                is_waveform = df_is_waveform or has_real_sampling_rate
+            
+            # Get sampling rate from attrs if not provided
+            if sampling_rate is None and hasattr(df, 'attrs') and df.attrs.get('is_waveform'):
+                sampling_rate = df.attrs.get('sampling_rate', None)
+            
+            # If still no sampling rate, default to 1.0 for computation only
+            if sampling_rate is None:
+                sampling_rate = 1.0
 
             fig, ax = plt.subplots(figsize=(12, 6))
 
@@ -248,24 +301,24 @@ class PlottingTools:
                 freqs_pos = freqs[pos]
                 mag_pos = np.abs(fft_values[pos])
 
-                # Peak picking: take top-k magnitudes
                 if freqs_pos.size == 0:
                     return freqs_pos, mag_pos, []
 
                 idx = np.argsort(mag_pos)[::-1]
                 idx = idx[: min(top_k_peaks, idx.size)]
                 peaks = [(float(freqs_pos[i]), float(mag_pos[i])) for i in idx]
-                # sort peaks by frequency for readability
                 peaks_sorted = sorted(peaks, key=lambda x: x[0])
                 return freqs_pos, mag_pos, peaks_sorted
 
             dominant: Dict[str, Any] = {}
 
-            if group_by in df.columns:
-                groups = df[group_by].dropna().unique()
+            gb = self._resolve_group_column(df, group_by)
+
+            if gb is not None:
+                groups = df[gb].dropna().unique()
                 any_plotted = False
                 for g in groups:
-                    arr = pd.to_numeric(df.loc[df[group_by] == g, column], errors="coerce").dropna().values
+                    arr = pd.to_numeric(df.loc[df[gb] == g, column], errors="coerce").dropna().values
                     if arr.size < 2:
                         continue
 
@@ -284,21 +337,41 @@ class PlottingTools:
                 ax.plot(freqs_pos, mag_pos, linewidth=1.5)
                 dominant["ALL"] = peaks
 
-            ax.set_xlabel("Frequency (Hz)")
+            # Use appropriate labels based on data type
+            # STRICT: Only call it waveform if is_waveform=True AND sampling_rate > 1.0
+            if is_waveform and sampling_rate > 1.0:
+                xlabel = "Frequency (Hz)"
+                plot_title = title or f"Frequency Spectrum: {column}"
+                plot_type_name = "frequency_spectrum"
+                note = f"Real waveform FFT (sampling rate: {sampling_rate} Hz). Dominant frequencies are top-{top_k_peaks} peaks."
+                summary_sampling_rate = float(sampling_rate)
+            else:
+                xlabel = "Sample-Index Frequency"
+                plot_title = title or f"Sample-Index Spectrum: {column}"
+                plot_type_name = "sample_index_spectrum"
+                note = f"⚠️ Feature table spectrum (NOT physical frequency). This shows patterns in sample order, not real Hz. Top-{top_k_peaks} peaks by magnitude."
+                summary_sampling_rate = None  # Don't report sampling_rate for feature tables
+                is_waveform = False  # Force to False for feature tables
+            
+            ax.set_xlabel(xlabel)
             ax.set_ylabel("Magnitude")
-            ax.set_title(title or f"Frequency Spectrum: {column}")
+            ax.set_title(plot_title)
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
 
             summary = {
-                "plot_type": "frequency_spectrum",
+                "plot_type": plot_type_name,
+                "is_waveform": is_waveform,
                 "column": column,
-                "sampling_rate": float(sampling_rate),
-                "dominant_frequencies": dominant,
-                "note": f"Dominant frequencies are top-{top_k_peaks} peaks by magnitude among positive frequencies.",
+                "sampling_rate": summary_sampling_rate,  # None for feature tables
+                "has_groups": gb is not None,
+                "group_column": gb if gb is not None else None,
+                "groups": list(dominant.keys()),
+                "dominant_peaks": dominant,
+                "note": note,
             }
 
-            return {"success": True, "figure": fig, "plot_type": "frequency_spectrum", "column": column, "summary": summary}
+            return {"success": True, "figure": fig, "plot_type": plot_type_name, "column": column, "summary": summary}
 
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -315,15 +388,14 @@ class PlottingTools:
         title: str = None,
         bins: int = 30,
     ) -> Dict[str, Any]:
-        """
-        Plot distribution comparison between groups.
-        Returns summary including per-group stats and (for histogram) bin counts.
-        """
         try:
             if column not in df.columns:
                 return {"success": False, "error": f"Column '{column}' not found in dataset"}
-            if group_by not in df.columns:
-                return {"success": False, "error": f"Group column '{group_by}' not found"}
+
+            gb = self._resolve_group_column(df, group_by)
+            if gb is None:
+                return {"success": False, "error": "No group/label column found for distribution comparison."}
+            group_by = gb
 
             fig = plt.figure(figsize=(10, 6))
             ax = fig.add_subplot(111)
@@ -344,7 +416,6 @@ class PlottingTools:
                     ax.legend(title=group_by)
                     plt.xticks(rotation=45)
 
-                    # categorical summary
                     counts = {}
                     for g in df_clean[group_by].unique():
                         sub = df_clean[df_clean[group_by] == g][column]
@@ -353,12 +424,14 @@ class PlottingTools:
                         "plot_type": "distribution_histogram",
                         "column": column,
                         "is_categorical": True,
+                        "has_groups": True,
+                        "group_column": group_by,
+                        "groups": [str(g) for g in df_clean[group_by].unique()],
                         "category_counts": counts,
                     }
 
                 else:
                     groups = df_clean[group_by].unique()
-                    # Use shared bin edges for comparability
                     all_vals = pd.to_numeric(df_clean[column], errors="coerce").dropna().values
                     if all_vals.size == 0:
                         return {"success": False, "error": "No valid numeric values to plot."}
@@ -370,7 +443,6 @@ class PlottingTools:
                         ax.hist(vals, bins=bin_edges, label=str(g), alpha=0.6, edgecolor="black")
                         group_stats[str(g)] = self._numeric_stats(pd.Series(vals))
 
-                        # Store bin counts
                         counts, edges = np.histogram(vals, bins=bin_edges)
                         histogram_bins[str(g)] = {
                             "bin_edges": [float(x) for x in edges],
@@ -385,6 +457,9 @@ class PlottingTools:
                         "plot_type": "distribution_histogram",
                         "column": column,
                         "is_categorical": False,
+                        "has_groups": True,
+                        "group_column": group_by,
+                        "groups": [str(g) for g in groups],
                         "group_stats": group_stats,
                         "histogram_bins": histogram_bins,
                         "note": f"Histogram uses shared bin edges (bins={bins}) for group comparability.",
@@ -441,7 +516,6 @@ class PlottingTools:
 
             elif plot_type == "violin":
                 if is_cat:
-                    # fallback to bar for categorical
                     cross_tab = pd.crosstab(df_clean[column], df_clean[group_by])
                     cross_tab.plot(kind="bar", ax=ax, alpha=0.85, edgecolor="black")
                     ax.set_ylabel("Count")
@@ -500,7 +574,7 @@ class PlottingTools:
             return {"success": False, "error": str(e)}
 
     # -----------------------------
-    # Plot: Feature Comparison (multi-panel)
+    # Plot: Feature Comparison
     # -----------------------------
     def plot_feature_comparison(
         self,
@@ -510,9 +584,6 @@ class PlottingTools:
         title: str = None,
         bins: int = 20,
     ) -> Dict[str, Any]:
-        """
-        Plot histograms for multiple features. Returns per-feature per-group stats.
-        """
         try:
             if not columns:
                 return {"success": False, "error": "No columns specified"}
@@ -530,16 +601,17 @@ class PlottingTools:
             axes = axes.flatten()
 
             summary_stats: Dict[str, Any] = {}
+            gb = self._resolve_group_column(df, group_by)
 
             for i, col in enumerate(valid):
                 ax = axes[i]
                 col_series = df[col]
 
-                if group_by in df.columns:
-                    groups = df[group_by].dropna().unique()
+                if gb is not None:
+                    groups = df[gb].dropna().unique()
                     per_group = {}
                     for g in groups:
-                        vals = pd.to_numeric(df.loc[df[group_by] == g, col], errors="coerce").dropna()
+                        vals = pd.to_numeric(df.loc[df[gb] == g, col], errors="coerce").dropna()
                         if not vals.empty:
                             ax.hist(vals, bins=bins, alpha=0.6, label=str(g))
                         per_group[str(g)] = self._numeric_stats(vals)
@@ -583,9 +655,6 @@ class PlottingTools:
         title: str = None,
         annot: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Plot correlation heatmap with deterministic correlation matrix summary.
-        """
         try:
             if columns:
                 df_subset = df[columns]
