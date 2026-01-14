@@ -1,14 +1,18 @@
 """
-Statistical AI Agent Core Module (Stable Version)
+Statistical AI Agent Core Module (Stable + Robust Disambiguation Version)
 - Deterministic tools produce ALL numbers and plot summaries.
 - Agent NEVER asks LLM to compute or invent numeric facts.
 - LLM is only used for fallback general chat, not for tool-result generation.
+
+Key improvement:
+- Robust column disambiguation for NL-to-plot:
+  - When selecting a VALUE/Y column (time series / FFT), avoid time-like columns
+    unless user explicitly requests only time-like columns.
 """
 
 import os
 import re
-import json
-from typing import Dict, List, Optional, Any, Callable, Tuple
+from typing import Dict, List, Optional, Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -25,6 +29,38 @@ class StatisticalAgent:
     2) Call tools (Python)
     3) Produce explanation ONLY from tool outputs (no hallucination)
     """
+
+    VALUE_COLUMN_KEYWORDS = [
+        "signal",
+        "sensor",
+        "measurement",
+        "value",
+        "amplitude",
+        "vibration",
+        "acc",
+        "accel",
+        "accelerat",
+        "gyro",
+        "current",
+        "voltage",
+        "pressure",
+        "temp",
+        "temperature",
+        "speed",
+        "vel",
+    ]
+
+    TIME_COLUMN_KEYWORDS = [
+        "time",
+        "timestamp",
+        "datetime",
+        "date",
+        "cycle",
+        "period",
+        "phase",
+        "elapsed",
+        "duration",
+    ]
 
     def __init__(
         self,
@@ -57,6 +93,56 @@ class StatisticalAgent:
 
     def set_analysis_results(self, results: Dict[str, Any]):
         self.analysis_results = results
+    
+    def _get_global_task_context(self) -> Dict[str, Any]:
+        """
+        Extract global task context from current data.
+        This ensures LLM always knows: task type, label column, groups, etc.
+        GENERIC: Works for any binary/multi-class classification dataset.
+        """
+        context = {
+            "has_data": self.current_data is not None,
+            "task_type": "unknown",
+            "label_column": None,
+            "groups": [],
+            "sample_counts": {},
+            "analysis_goal": None,
+        }
+        
+        if self.current_data is None:
+            return context
+        
+        df = self.current_data
+        
+        # Auto-detect label column (generic approach)
+        label_candidates = ["OK_KO_Label", "label", "target", "class", "y", "fault", "status"]
+        label_col = None
+        
+        for candidate in label_candidates:
+            if candidate in df.columns:
+                label_col = candidate
+                break
+        
+        if label_col is not None:
+            context["task_type"] = "classification"
+            context["label_column"] = label_col
+            
+            # Get unique groups
+            groups = df[label_col].dropna().unique().tolist()
+            context["groups"] = [str(g) for g in groups]
+            
+            # Count samples per group
+            for g in groups:
+                count = int((df[label_col] == g).sum())
+                context["sample_counts"][str(g)] = count
+            
+            # Generate analysis goal description
+            if len(groups) == 2:
+                context["analysis_goal"] = f"Binary classification: distinguish {groups[0]} from {groups[1]}"
+            else:
+                context["analysis_goal"] = f"Multi-class classification: {len(groups)} classes"
+        
+        return context
 
     def _create_data_context_summary(self) -> str:
         if self.current_data is None:
@@ -92,11 +178,10 @@ class StatisticalAgent:
 
         intent = self._parse_intent(user_message)
 
-        # If intent unknown -> optional LLM fallback (chat only, no numbers)
         if intent["type"] == "unknown":
             if self.enable_llm_fallback_chat:
                 return self._fallback_chat(user_message)
-            # Generate dynamic example based on actual columns
+
             example_col = self.current_data.columns[0] if len(self.current_data.columns) > 0 else "column_name"
             return {
                 "response": f"⚠️ I couldn't understand the request. Try: 'mean and variance of {example_col}', or 'plot histogram of {example_col}'.",
@@ -105,7 +190,6 @@ class StatisticalAgent:
                 "tool_results": [],
             }
 
-        # Execute deterministic tool
         tool_name = intent["tool"]
         tool_args = intent.get("args", {})
         tool_func = self.tool_functions.get(tool_name)
@@ -120,7 +204,6 @@ class StatisticalAgent:
 
         result = tool_func(**tool_args)
 
-        # Hard stop: never ask LLM to “fix” a tool failure
         if not result.get("success", False):
             resp = result.get("message") or f"❌ Tool error: {result.get('error', 'Unknown error')}"
             self.conversation.add_message("assistant", resp, {"tool_results": [result]})
@@ -131,7 +214,6 @@ class StatisticalAgent:
                 "tool_results": [result],
             }
 
-        # Build final response from tool outputs (stable)
         response = self._render_response_from_tool(result, intent)
 
         plots = []
@@ -160,8 +242,47 @@ class StatisticalAgent:
                 matched.append(col)
         return matched
 
+    def _identify_time_like_columns(self) -> List[str]:
+        if self.current_data is None:
+            return []
+
+        df = self.current_data
+        time_like: List[str] = []
+
+        time_attr = getattr(df, "attrs", {}).get("time_column")
+        if time_attr and time_attr in df.columns:
+            time_like.append(time_attr)
+
+        for col in df.columns:
+            col_lower = str(col).lower()
+            if any(key in col_lower for key in self.TIME_COLUMN_KEYWORDS):
+                if col not in time_like:
+                    time_like.append(col)
+                continue
+
+            series = df[col]
+            if np.issubdtype(series.dtype, np.datetime64):
+                if col not in time_like:
+                    time_like.append(col)
+
+        return time_like
+
+    def _prioritize_columns(self, columns: List[str], prefer_keywords: Optional[List[str]] = None) -> List[str]:
+        if not prefer_keywords:
+            return columns
+
+        keywords = [k.lower() for k in prefer_keywords]
+        preferred: List[str] = []
+        others: List[str] = []
+        for col in columns:
+            name = str(col).lower()
+            if any(key in name for key in keywords):
+                preferred.append(col)
+            else:
+                others.append(col)
+        return preferred + others
+
     def _collect_feature_names(self, source: Any) -> List[str]:
-        """Extract feature names from various analysis result structures."""
         names: List[str] = []
         if not source:
             return names
@@ -173,14 +294,17 @@ class StatisticalAgent:
                 elif isinstance(item, str):
                     names.append(item)
         elif isinstance(source, dict):
-            # Some sources may store features keyed by rank
             for value in source.values():
                 if isinstance(value, (str, list, dict)):
                     names.extend(self._collect_feature_names(value))
         return names
 
-    def _get_analysis_based_columns(self, limit: int = 3) -> List[str]:
-        """Return top feature names derived from previous analysis results."""
+    def _get_analysis_based_columns(
+        self,
+        limit: int = 3,
+        exclude_time_like: bool = True,
+        prefer_keywords: Optional[List[str]] = None,
+    ) -> List[str]:
         if not self.analysis_results or self.current_data is None:
             return []
 
@@ -191,59 +315,114 @@ class StatisticalAgent:
                 if name in self.current_data.columns and name not in candidates:
                     candidates.append(name)
 
-        # Direct feature ranking (statistical analyzer)
+        # Try multiple paths for feature ranking
+        # Path 1: Top-level feature_ranking
         add_candidates(self.analysis_results.get("feature_ranking"))
-
-        # Statistical analysis nested structure
+        
+        # Path 2: ML feature importance
+        ml_results = self.analysis_results.get("ml_feature_importance")
+        if isinstance(ml_results, dict):
+            feature_importance = ml_results.get("feature_importance") or {}
+            add_candidates(feature_importance.get("feature_ranking"))
+        
+        # Path 3: Legacy paths
         stat_analysis = self.analysis_results.get("statistical_analysis")
         if isinstance(stat_analysis, dict):
             add_candidates(stat_analysis.get("feature_ranking"))
 
-        # Summary may include top lists
         summary = self.analysis_results.get("summary")
         if isinstance(summary, dict):
             add_candidates(summary.get("top_statistical_features"))
             add_candidates(summary.get("top_ml_features"))
             add_candidates(summary.get("consensus_features"))
+        
+        # Path 4: Direct feature_importance key (backward compatibility)
+        legacy_fi = self.analysis_results.get("feature_importance")
+        if isinstance(legacy_fi, dict):
+            nested_fi = legacy_fi.get("feature_importance") or {}
+            add_candidates(nested_fi.get("feature_ranking"))
 
-        # ML feature importance structures
-        ml_results = self.analysis_results.get("ml_feature_importance") or self.analysis_results.get("feature_importance")
-        if isinstance(ml_results, dict):
-            feature_importance = ml_results.get("feature_importance") or {}
-            add_candidates(feature_importance.get("feature_ranking"))
+        if exclude_time_like:
+            time_like = set(self._identify_time_like_columns())
+            candidates = [c for c in candidates if c not in time_like]
 
+        candidates = self._prioritize_columns(candidates, prefer_keywords)
         return candidates[:limit]
 
-    def _get_default_columns(self, limit: int = 1) -> List[str]:
-        """Fallback column selection prioritizing analysis insights, then numeric columns."""
+    def _get_default_columns(
+        self,
+        limit: int = 1,
+        exclude_time_like: bool = True,
+        prefer_keywords: Optional[List[str]] = None,
+    ) -> List[str]:
         if self.current_data is None:
             return []
 
         defaults: List[str] = []
 
-        # Prefer columns highlighted by previous analyses
-        defaults.extend(self._get_analysis_based_columns(limit=limit * 2))
+        defaults.extend(
+            self._get_analysis_based_columns(
+                limit=limit * 2,
+                exclude_time_like=exclude_time_like,
+                prefer_keywords=prefer_keywords,
+            )
+        )
 
-        # Fallback to numeric columns (excluding label)
         numeric_cols = [
             col
             for col in self.current_data.select_dtypes(include=[np.number]).columns
             if col != "OK_KO_Label"
         ]
+
+        if exclude_time_like:
+            time_like = set(self._identify_time_like_columns())
+            numeric_cols = [col for col in numeric_cols if col not in time_like]
+
         for col in numeric_cols:
             if col not in defaults:
                 defaults.append(col)
 
+        defaults = self._prioritize_columns(defaults, prefer_keywords)
+
+        if not defaults and exclude_time_like:
+            return self._get_default_columns(limit=limit, exclude_time_like=False, prefer_keywords=prefer_keywords)
+
         return defaults[:limit]
 
-    def _resolve_columns(self, matched: List[str], limit: int = 1) -> List[str]:
-        """Use matched columns or fall back to defaults when not provided."""
+    def _resolve_columns(
+        self,
+        matched: List[str],
+        limit: int = 1,
+        exclude_time_like: bool = True,
+        prefer_keywords: Optional[List[str]] = None,
+        purpose: str = "y",  # "y" | "x" | "any"
+    ) -> List[str]:
+        """
+        Robust disambiguation:
+        - If user message matched some columns, treat them as candidates.
+        - For value/y selection (time series / FFT), avoid time-like columns unless ONLY time-like columns were matched.
+        This is dataset-agnostic.
+        """
+        if self.current_data is None:
+            return []
+
         if matched:
+            if purpose == "y":
+                time_like = set(self._identify_time_like_columns())
+                non_time = [c for c in matched if c not in time_like]
+                if non_time:
+                    matched = non_time  # prefer non-time if available
+
+            matched = self._prioritize_columns(matched, prefer_keywords)
             return matched[:limit]
-        return self._get_default_columns(limit=limit)
+
+        return self._get_default_columns(
+            limit=limit,
+            exclude_time_like=exclude_time_like,
+            prefer_keywords=prefer_keywords,
+        )
 
     def _extract_metrics(self, text: str) -> Optional[List[str]]:
-        """Return a list of requested metrics or None meaning 'full summary'."""
         metric_map = {
             "mean": ["mean", "average", "avg"],
             "median": ["median"],
@@ -259,7 +438,6 @@ class StatisticalAgent:
             if any(k in text for k in keys):
                 requested.append(m)
 
-        # If user says summary/statistics and no explicit metrics -> full summary
         if any(k in text for k in ["summary", "statistics", "statistical summary"]) and not requested:
             return None
 
@@ -269,29 +447,36 @@ class StatisticalAgent:
         text = user_message.lower()
         cols = self._match_columns(user_message)
 
-        # Feature importance (explicit)
         if any(k in text for k in ["feature importance", "importance ranking", "rank features", "most important features"]):
             return {"type": "tool", "tool": "get_feature_importance", "args": {"top_n": 10}}
 
-        # FFT / frequency spectrum - support multiple ways to ask
-        # "fft", "frequency spectrum", "show fft for X", "plot frequency of X"
         fft_keywords = ["fft", "frequency spectrum", "fourier", "spectrum"]
         if any(k in text for k in fft_keywords):
-            resolved_cols = self._resolve_columns(cols, limit=1)
+            resolved_cols = self._resolve_columns(
+                cols,
+                limit=1,
+                exclude_time_like=True,
+                prefer_keywords=self.VALUE_COLUMN_KEYWORDS,
+                purpose="y",
+            )
             if not resolved_cols:
                 return {"type": "unknown"}
             return {"type": "tool", "tool": "plot_frequency_spectrum", "args": {"column": resolved_cols[0]}}
 
-        # Detect if user wants to filter by OK or KO group
         filter_group = None
         if " ok " in f" {text} " or "ok samples" in text or "ok group" in text or "for ok" in text:
             filter_group = "OK"
         elif " ko " in f" {text} " or "ko samples" in text or "ko group" in text or "for ko" in text:
             filter_group = "KO"
 
-        # Time series (explicit phrase only)
         if "time series" in text or "timeseries" in text:
-            resolved_cols = self._resolve_columns(cols, limit=1)
+            resolved_cols = self._resolve_columns(
+                cols,
+                limit=1,
+                exclude_time_like=True,
+                prefer_keywords=self.VALUE_COLUMN_KEYWORDS,
+                purpose="y",
+            )
             if not resolved_cols:
                 return {"type": "unknown"}
             return {
@@ -300,9 +485,8 @@ class StatisticalAgent:
                 "args": {"column": resolved_cols[0], "separate_groups": True, "filter_group": filter_group},
             }
 
-        # Distribution plot: require explicit plot-type words (NOT just "show")
         if any(k in text for k in ["histogram", "distribution", "boxplot", "box plot", "violin", "kde", "density"]):
-            resolved_cols = self._resolve_columns(cols, limit=1)
+            resolved_cols = self._resolve_columns(cols, limit=1, purpose="any")
             if not resolved_cols:
                 return {"type": "unknown"}
             plot_type = "histogram"
@@ -318,7 +502,6 @@ class StatisticalAgent:
                 "args": {"column": resolved_cols[0], "plot_type": plot_type, "filter_group": filter_group},
             }
 
-        # Statistics: detect numeric words
         stat_words = ["mean", "median", "mode", "variance", "std", "standard deviation", "summary", "statistics", "min", "max", "count", "average"]
         if any(w in text for w in stat_words):
             metrics = self._extract_metrics(text)
@@ -328,9 +511,8 @@ class StatisticalAgent:
                 "args": {"columns": cols if cols else None, "group_by_ok_ko": True, "metrics": metrics},
             }
 
-        # Compare multiple features (explicit)
         if "compare" in text:
-            resolved_cols = self._resolve_columns(cols, limit=6)
+            resolved_cols = self._resolve_columns(cols, limit=6, purpose="any")
             if len(resolved_cols) >= 2:
                 return {"type": "tool", "tool": "compare_features", "args": {"columns": resolved_cols[:6]}}
 
@@ -340,31 +522,19 @@ class StatisticalAgent:
     # Rendering (NO LLM NUMBERS)
     # -----------------------------
     def _render_response_from_tool(self, tool_result: Dict[str, Any], intent: Dict[str, Any]) -> str:
-        """
-        Construct final response ONLY using fields returned by the tool:
-        - tool_result['message'] (human-readable)
-        - tool_result['data'] (structured)
-        - tool_result['summary'] (structured explanation for plots)
-        
-        Optionally uses LLM to interpret the results if enable_llm_interpretation is True.
-        """
         parts = []
 
-        # Always include tool message (already deterministic)
         if tool_result.get("message"):
             parts.append(tool_result["message"].strip())
 
-        # If plot tool returned summary -> generate stable explanation
         summary = tool_result.get("summary")
         if isinstance(summary, dict) and summary:
             parts.append("\n---\n")
             parts.append(self._explain_plot_summary(summary))
 
-        # Include warnings if any
         if tool_result.get("warning"):
             parts.append(f"\n⚠️ {tool_result['warning']}")
-        
-        # Optionally add LLM interpretation
+
         if self.enable_llm_interpretation:
             base_response = "\n".join([p for p in parts if p]).strip()
             llm_interpretation = self._llm_interpret_result(tool_result, intent, base_response)
@@ -376,95 +546,165 @@ class StatisticalAgent:
         return "\n".join([p for p in parts if p]).strip()
 
     def _explain_plot_summary(self, summary: Dict[str, Any]) -> str:
-        """
-        Template explanation. No invented numbers.
-        Expect plotter to provide summary fields.
-        """
         plot_type = summary.get("plot_type", "plot")
         column = summary.get("column", "feature")
 
-        lines = [f"🧾 **Plot Interpretation (from tool summary)**", f"- Plot type: **{plot_type}**", f"- Column: **{column}**"]
+        lines = [
+            "🧾 **Plot Interpretation (from tool summary)**",
+            f"- Plot type: **{plot_type}**",
+            f"- Column: **{column}**",
+        ]
 
-        # Optional keys depending on plot type
+        # X axis info (for time series / index plots)
+        if "x_axis" in summary:
+            lines.append(f"- X axis: {summary['x_axis']}")
+        
+        # Check if it's a true time series or index plot
+        if "is_true_time_series" in summary:
+            if summary["is_true_time_series"]:
+                lines.append("- ✅ True time series (real time axis detected)")
+            else:
+                lines.append("- ⚠️ Index plot (no real time axis, using sample index)")
+        
+        # Waveform vs feature table for FFT
+        if "is_waveform" in summary:
+            if summary["is_waveform"] and summary.get("sampling_rate"):
+                lines.append(f"- ✅ Real waveform data (sampling rate: {summary['sampling_rate']} Hz)")
+            else:
+                lines.append("- ⚠️ Feature table data (NOT physical waveform)")
+        
+        # Group information
+        if summary.get("has_groups"):
+            group_col = summary.get("group_column", "group")
+            groups = summary.get("groups", [])
+            lines.append(f"- Groups: {', '.join(groups)} (by {group_col})")
+
+        # Group statistics
         if "group_stats" in summary:
-            # e.g., {"OK": {"mean":..., "std":...}, "KO": {...}}
             gs = summary["group_stats"]
+            lines.append("\n**Statistics by group:**")
             for g, st in gs.items():
-                lines.append(f"- {g} stats: {st}")
+                if isinstance(st, dict):
+                    stats_str = ", ".join([f"{k}={v:.4f}" if isinstance(v, (int, float)) else f"{k}={v}" 
+                                          for k, v in st.items() if k in ['count', 'mean', 'std', 'min', 'max']])
+                    lines.append(f"- {g}: {stats_str}")
 
-        if "dominant_frequencies" in summary:
-            # e.g., {"OK": [(freq, magnitude), ...], "KO": ...}
-            dfreq = summary["dominant_frequencies"]
-            lines.append("- Dominant frequencies (top peaks):")
-            for g, peaks in dfreq.items():
-                lines.append(f"  - {g}: {peaks}")
+        # FFT peaks (renamed from dominant_frequencies)
+        if "dominant_peaks" in summary:
+            dpeaks = summary["dominant_peaks"]
+            is_waveform = summary.get("is_waveform", False)
+            unit = "Hz" if is_waveform else "sample-index"
+            lines.append(f"\n**Dominant peaks ({unit}):**")
+            for g, peaks in dpeaks.items():
+                if peaks:
+                    peak_str = ", ".join([f"{freq:.2f}" for freq, mag in peaks[:3]])
+                    lines.append(f"- {g}: {peak_str}")
 
+        # Note/warning
         if summary.get("note"):
-            lines.append(f"- Note: {summary['note']}")
+            lines.append(f"\n**Note:** {summary['note']}")
 
         return "\n".join(lines)
 
     def _llm_interpret_result(self, tool_result: Dict[str, Any], intent: Dict[str, Any], base_response: str) -> str:
-        """
-        Use LLM to provide intelligent interpretation of tool results.
-        The LLM receives the exact numbers from tools and explains their meaning.
-        """
         try:
             tool_name = intent.get("tool", "unknown")
+            summary = tool_result.get("summary", {})
             
-            # Build context for LLM
-            context_parts = []
-            context_parts.append(f"Tool used: {tool_name}")
-            context_parts.append(f"Tool output:\n{base_response}")
+            # Get global task context (ALWAYS include this)
+            task_context = self._get_global_task_context()
+
+            # Build structured context from summary
+            context_parts = [f"Tool used: {tool_name}"]
             
-            # Add structured data if available
-            if tool_result.get("data"):
-                context_parts.append(f"Structured data: {tool_result['data']}")
+            # ALWAYS add global task context first
+            if task_context["has_data"]:
+                context_parts.append("\n**Dataset Context (CRITICAL - READ THIS FIRST):**")
+                context_parts.append(f"- Task type: {task_context['task_type']}")
+                if task_context["label_column"]:
+                    context_parts.append(f"- Label column: {task_context['label_column']}")
+                    context_parts.append(f"- Groups: {', '.join(task_context['groups'])}")
+                    context_parts.append(f"- Sample counts: {task_context['sample_counts']}")
+                    context_parts.append(f"- Analysis goal: {task_context['analysis_goal']}")
+            
+            # Add summary fields
+            if summary:
+                context_parts.append("\n**Analysis Results:**")
+                context_parts.append(f"- Plot type: {summary.get('plot_type', 'unknown')}")
+                context_parts.append(f"- Column: {summary.get('column', 'unknown')}")
+                
+                # Time series specifics
+                if "is_true_time_series" in summary:
+                    context_parts.append(f"- Is true time series: {summary['is_true_time_series']}")
+                    if not summary['is_true_time_series']:
+                        context_parts.append("  ⚠️ This is an INDEX PLOT, NOT a time series!")
+                
+                # FFT specifics
+                if "is_waveform" in summary:
+                    context_parts.append(f"- Is real waveform: {summary['is_waveform']}")
+                    if summary.get('sampling_rate'):
+                        context_parts.append(f"- Sampling rate: {summary['sampling_rate']} Hz")
+                    if not summary['is_waveform']:
+                        context_parts.append("  ⚠️ This is a FEATURE TABLE spectrum, NOT physical frequency!")
+                
+                # Group information
+                if summary.get("has_groups"):
+                    context_parts.append(f"- Result has groups: Yes ({summary.get('group_column', 'unknown')})")
+                    context_parts.append(f"- Groups in result: {', '.join(summary.get('groups', []))}")
+                    
+                    # Group statistics
+                    if "group_stats" in summary:
+                        context_parts.append("\n**Group Statistics (USE THESE FOR COMPARISON):**")
+                        for group, stats in summary['group_stats'].items():
+                            if isinstance(stats, dict):
+                                stats_str = ", ".join([f"{k}={v:.4f}" if isinstance(v, (int, float)) else f"{k}={v}"
+                                                      for k, v in stats.items()])
+                                context_parts.append(f"- {group}: {stats_str}")
+                
+                # Note/warning
+                if summary.get("note"):
+                    context_parts.append(f"\n**Note:** {summary['note']}")
             
             context = "\n".join(context_parts)
-            
-            # Get current dataset context
-            dataset_context = "a dataset with OK/KO labels"
-            if self.current_data is not None:
-                cols = [c for c in self.current_data.columns if c != 'OK_KO_Label']
-                if cols:
-                    dataset_context = f"a dataset with features: {', '.join(cols[:5])}"
-            
-            # Domain-specific interpretation prompt
-            interpretation_prompt = f"""You are an expert data analyst interpreting results from {dataset_context}.
 
-The data has OK/KO labels where:
-- OK = healthy/normal state
-- KO = degraded/anomalous state
+            interpretation_prompt = f"""You are an expert data analyst interpreting results.
 
-Here are the EXACT results from the analysis tool (DO NOT change any numbers):
+DATASET INFORMATION IS PROVIDED ABOVE - READ IT CAREFULLY!
+
+CRITICAL INSTRUCTIONS:
+1. Base your interpretation ONLY on the structured data above.
+2. DO NOT say "no group information provided" - the groups are ALWAYS listed above.
+3. DO NOT invent or calculate any numbers - use only what's given.
+4. If "is_true_time_series: False", call it "index plot", NOT "time series".
+5. If "is_waveform: False", DO NOT interpret as physical Hz.
+6. ALWAYS compare groups when group statistics are provided.
+
+Structured Data:
 
 {context}
 
 Provide a brief (2-3 sentences) expert interpretation:
 1. What do these numbers mean in the context of the data?
-2. Is there a significant difference between OK and KO groups?
+2. If groups exist, is there a meaningful difference between them?
 3. What actionable insight can be drawn?
 
 IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics."""
-
             messages = [
                 {"role": "system", "content": "You are a data analysis expert. Interpret analysis results concisely."},
-                {"role": "user", "content": interpretation_prompt}
+                {"role": "user", "content": interpretation_prompt},
             ]
-            
+
             llm_response = self.llm.generate(
                 messages=messages,
-                temperature=0.3,  # Low temperature for consistent interpretation
+                temperature=0.3,
                 max_tokens=200,
-                tools=None
+                tools=None,
             )
-            
+
             interpretation = (llm_response.get("content") or "").strip()
             return interpretation if interpretation else None
-            
-        except Exception as e:
-            # Silent fail - interpretation is optional
+
+        except Exception:
             return None
 
     # -----------------------------
@@ -473,16 +713,13 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
     def _fallback_chat(self, user_message: str) -> Dict[str, Any]:
         messages = self.conversation.get_messages_for_llm()
 
-        # Get example column name from current dataset
         example_col = "column_name"
         if self.current_data is not None and len(self.current_data.columns) > 0:
-            # Get first non-label column
-            cols = [c for c in self.current_data.columns if c != 'OK_KO_Label']
+            cols = [c for c in self.current_data.columns if c != "OK_KO_Label"]
             example_col = cols[0] if cols else self.current_data.columns[0]
 
-        # HARD safety prompt: forbid numerical claims
         system_prompt = (
-            f"You are a helpful assistant for analyzing datasets with OK/KO labels. "
+            f"You are a helpful assistant for analyzing datasets with labels. "
             "Do NOT compute or invent any numeric results. "
             f"If user asks for statistics or plots, instruct them how to ask using tool keywords "
             f"like: 'mean variance {example_col}', 'histogram {example_col}', 'fft {example_col}', 'time series for KO samples'."
@@ -534,7 +771,7 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
         if metrics is not None:
             metrics = [m for m in metrics if m in allowed]
             if not metrics:
-                metrics = None  # full summary
+                metrics = None
 
         def calc(series: pd.Series) -> Dict[str, Any]:
             s = series.dropna()
@@ -580,20 +817,36 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
                 msg.append(f"- {st}")
             msg.append("")
 
-        return {"success": True, "message": "\n".join(msg).strip(), "data": summary}
+        # Get task context for LLM interpretation
+        task_context = self._get_global_task_context()
+        
+        return {
+            "success": True, 
+            "message": "\n".join(msg).strip(), 
+            "data": summary,
+            "summary": {
+                "plot_type": "statistical_summary",
+                "columns": columns,
+                "has_groups": group_by_ok_ko and task_context.get("label_column") is not None,
+                "group_column": task_context.get("label_column"),
+                "groups": task_context.get("groups", []),
+                "metrics": metrics if metrics else ["count", "mean", "median", "mode", "std", "variance", "min", "max"],
+                "group_stats": summary,
+                "note": f"Statistical comparison across {len(columns)} features."
+            }
+        }
 
     def _tool_plot_time_series(self, column: str, separate_groups: bool = True, filter_group: str = None) -> Dict[str, Any]:
         df = self.current_data
         assert df is not None
-        
-        # Filter by group if specified
+
         plot_df = df
         group_label = ""
         if filter_group and "OK_KO_Label" in df.columns:
             plot_df = df[df["OK_KO_Label"] == filter_group].copy()
             group_label = f" ({filter_group} samples only)"
-            separate_groups = False  # No need to separate when already filtered
-        
+            separate_groups = False
+
         res = self.plotter.plot_time_series(plot_df, column=column, separate_groups=separate_groups)
 
         if not res.get("success", False):
@@ -610,6 +863,7 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
     def _tool_plot_frequency_spectrum(self, column: str, sampling_rate: float = 1.0) -> Dict[str, Any]:
         df = self.current_data
         assert df is not None
+
         res = self.plotter.plot_frequency_spectrum(df, column=column, sampling_rate=sampling_rate)
 
         if not res.get("success", False):
@@ -625,14 +879,13 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
     def _tool_plot_distribution(self, column: str, plot_type: str = "histogram", filter_group: str = None) -> Dict[str, Any]:
         df = self.current_data
         assert df is not None
-        
-        # Filter by group if specified
+
         plot_df = df
         group_label = ""
         if filter_group and "OK_KO_Label" in df.columns:
             plot_df = df[df["OK_KO_Label"] == filter_group].copy()
             group_label = f" ({filter_group} samples only)"
-        
+
         res = self.plotter.plot_distribution_comparison(plot_df, column=column, plot_type=plot_type)
 
         if not res.get("success", False):
@@ -661,26 +914,64 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
         }
 
     def _tool_get_feature_importance(self, top_n: int = 10) -> Dict[str, Any]:
-        """
-        Get feature importance from current analysis results or CSV file.
-        Prioritizes current session analysis results over saved CSV.
-        """
         try:
             ranking = []
-            
-            # Priority 1: Use current analysis results (from this session)
-            if self.analysis_results and 'feature_importance' in self.analysis_results:
-                fi = self.analysis_results.get('feature_importance', {})
-                feature_ranking = fi.get('feature_importance', {}).get('feature_ranking', [])
-                if feature_ranking:
-                    for item in feature_ranking[:top_n]:
-                        ranking.append({
-                            "rank": item.get('rank', len(ranking) + 1),
-                            "feature": str(item.get('feature', '')),
-                            "importance": float(item.get('importance', 0))
-                        })
-            
-            # Priority 2: Fall back to CSV file if no current results
+            debug_info = []  # For debugging
+
+            # Try multiple paths to find feature importance data
+            if self.analysis_results:
+                debug_info.append(f"Available keys: {list(self.analysis_results.keys())}")
+                
+                # Path 1: Top-level feature_ranking (added by advanced_analysis.py)
+                if "feature_ranking" in self.analysis_results:
+                    feature_ranking = self.analysis_results.get("feature_ranking", [])
+                    debug_info.append(f"Path 1 - feature_ranking length: {len(feature_ranking) if feature_ranking else 0}")
+                    if feature_ranking and len(feature_ranking) > 0:
+                        debug_info.append(f"Path 1 - First item keys: {list(feature_ranking[0].keys())}")
+                        for idx, item in enumerate(feature_ranking[:top_n], start=1):
+                            # Statistical analysis uses 'composite_score', ML uses 'importance'
+                            importance_value = item.get("importance") or item.get("composite_score", 0)
+                            ranking.append(
+                                {
+                                    "rank": idx,
+                                    "feature": str(item.get("feature", "")),
+                                    "importance": float(importance_value),
+                                }
+                            )
+                
+                # Path 2: ML feature importance results
+                if not ranking and "ml_feature_importance" in self.analysis_results:
+                    ml_fi = self.analysis_results.get("ml_feature_importance", {})
+                    debug_info.append(f"Path 2 - ml_feature_importance keys: {list(ml_fi.keys()) if ml_fi else 'None'}")
+                    if ml_fi and "feature_importance" in ml_fi:
+                        feature_ranking = ml_fi["feature_importance"].get("feature_ranking", [])
+                        debug_info.append(f"Path 2 - feature_ranking length: {len(feature_ranking) if feature_ranking else 0}")
+                        if feature_ranking and len(feature_ranking) > 0:
+                            debug_info.append(f"Path 2 - First item keys: {list(feature_ranking[0].keys())}")
+                            for idx, item in enumerate(feature_ranking[:top_n], start=1):
+                                ranking.append(
+                                    {
+                                        "rank": idx,
+                                        "feature": str(item.get("feature", "")),
+                                        "importance": float(item.get("importance", 0)),
+                                    }
+                                )
+                
+                # Path 3: Legacy path (for backward compatibility)
+                if not ranking and "feature_importance" in self.analysis_results:
+                    fi = self.analysis_results.get("feature_importance", {})
+                    feature_ranking = fi.get("feature_importance", {}).get("feature_ranking", [])
+                    if feature_ranking:
+                        for idx, item in enumerate(feature_ranking[:top_n], start=1):
+                            importance_value = item.get("importance") or item.get("composite_score", 0)
+                            ranking.append(
+                                {
+                                    "rank": idx,
+                                    "feature": str(item.get("feature", "")),
+                                    "importance": float(importance_value),
+                                }
+                            )
+
             if not ranking:
                 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 csv_path = os.path.join(base_dir, "data", "processed", "feature_importance.csv")
@@ -688,40 +979,59 @@ IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.""
                 if not os.path.exists(csv_path):
                     return {"success": False, "message": "⚠️ No feature importance data available. Please run Advanced Analysis first."}
 
-                # Read CSV
                 try:
                     imp = pd.read_csv(csv_path)
                 except Exception:
                     imp = pd.read_csv(csv_path, header=None)
 
-                # Normalize columns
                 if set(["feature", "importance"]).issubset(set(imp.columns)):
-                    df = imp[["feature", "importance"]].copy()
+                    df2 = imp[["feature", "importance"]].copy()
                 else:
-                    df = imp.iloc[:, :2].copy()
-                    df.columns = ["c0", "c1"]
-                    c0_num = pd.to_numeric(df["c0"], errors="coerce").notna().mean()
-                    c1_num = pd.to_numeric(df["c1"], errors="coerce").notna().mean()
+                    df2 = imp.iloc[:, :2].copy()
+                    df2.columns = ["c0", "c1"]
+                    c0_num = pd.to_numeric(df2["c0"], errors="coerce").notna().mean()
+                    c1_num = pd.to_numeric(df2["c1"], errors="coerce").notna().mean()
                     if c0_num < c1_num:
-                        df = df.rename(columns={"c0": "feature", "c1": "importance"})
+                        df2 = df2.rename(columns={"c0": "feature", "c1": "importance"})
                     else:
-                        df = df.rename(columns={"c1": "feature", "c0": "importance"})
+                        df2 = df2.rename(columns={"c1": "feature", "c0": "importance"})
 
-                df["feature"] = df["feature"].astype(str)
-                df["importance"] = pd.to_numeric(df["importance"], errors="coerce")
-                df = df.dropna(subset=["importance"])
-                df = df.sort_values("importance", ascending=False).reset_index(drop=True)
+                df2["feature"] = df2["feature"].astype(str)
+                df2["importance"] = pd.to_numeric(df2["importance"], errors="coerce")
+                df2 = df2.dropna(subset=["importance"])
+                df2 = df2.sort_values("importance", ascending=False).reset_index(drop=True)
 
-                for rank_i, row in enumerate(df.head(top_n).itertuples(index=False), start=1):
+                for rank_i, row in enumerate(df2.head(top_n).itertuples(index=False), start=1):
                     ranking.append({"rank": rank_i, "feature": str(row.feature), "importance": float(row.importance)})
 
             if not ranking:
-                return {"success": False, "message": "⚠️ No valid feature importance rows found."}
+                return {"success": False, "message": f"⚠️ No feature importance data available. Please run Advanced Analysis first."}
 
+            # Get global task context to include in the result
+            task_context = self._get_global_task_context()
+            
             msg = ["🎯 **Top Important Features**\n"]
             for r in ranking:
                 msg.append(f"{r['rank']}. **{r['feature']}** — {r['importance']:.6f}")
-            return {"success": True, "message": "\n".join(msg).strip(), "data": {"feature_importance": ranking}}
+            
+            # Return with task context embedded
+            return {
+                "success": True, 
+                "message": "\n".join(msg).strip(), 
+                "data": {
+                    "feature_importance": ranking,
+                    "task_context": task_context  # CRITICAL: Include this for LLM
+                },
+                "summary": {
+                    "plot_type": "feature_importance",
+                    "top_n": len(ranking),
+                    "has_groups": task_context.get("label_column") is not None,
+                    "group_column": task_context.get("label_column"),
+                    "groups": task_context.get("groups", []),
+                    "analysis_goal": task_context.get("analysis_goal"),
+                    "note": f"Feature importance ranking based on ability to distinguish between groups."
+                }
+            }
 
         except Exception as e:
             return {"success": False, "message": f"⚠️ Error reading feature importance: {str(e)}"}
