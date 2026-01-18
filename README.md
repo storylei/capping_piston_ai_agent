@@ -395,7 +395,7 @@ Interact with your data using natural language queries - no code required:
 - Automatic time column detection
 - Filter by OK/KO groups or show all samples
 - Example: *"Plot time series for sensor_1"*
-- Example: *"Show time series for KO samples"*
+- Example: *"Show time series for signals"*
 
 **Frequency Analysis (FFT):**
 - Generate frequency spectrum (Fast Fourier Transform)
@@ -484,9 +484,9 @@ pip install autogluon --no-cache-dir
 
 Prof. Stefano Quer - stefano.quer@polito.it
 
-Lei Gao - s327756@studenti.polito.it
+Gao Lei  - s327756@studenti.polito.it
 
-Lan Deng - s338219@studenti.polito.it
+Deng Lan  - s338219@studenti.polito.it
 
 ## 🎓 Detailed Documentation
 

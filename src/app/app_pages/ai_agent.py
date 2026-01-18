@@ -91,7 +91,7 @@ def display():
         st.markdown(f"""
         **Visualization:**
         - "Plot histogram of {example_col}"
-        - "Show time series for KO samples"
+        - "Show time series for {example_col}"
         - "Plot FFT for {example_col}"
         - "Compare distribution between OK and KO"
         """)
