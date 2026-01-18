@@ -483,7 +483,9 @@ pip install autogluon --no-cache-dir
 ## 📧 Contact
 
 Prof. Stefano Quer - stefano.quer@polito.it
+
 Lei Gao - s327756@studenti.polito.it
+
 Lan Deng - s338219@studenti.polito.it
 
 ## 🎓 Detailed Documentation
