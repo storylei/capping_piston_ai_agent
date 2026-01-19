@@ -770,6 +770,7 @@ Warning: openai requires an API key but none was provided.
 
 #### 4.1.1 Titanic Dataset
 - **Source**: Kaggle Titanic survival prediction
+- **File**: `train.csv`
 - **Size**: 891 samples, 12 features (after loading)
 - **Features**: 
   - Numeric: `Age`, `Fare`, `Pclass`
@@ -779,20 +780,30 @@ Warning: openai requires an API key but none was provided.
 - **Class Distribution**: ~38.5% OK (Survived), ~61.6% KO (Not Survived)
 - **Use Case**: Binary classification on mixed data types; demonstrates handling of missing values (Age ~20%, Cabin ~77%) and categorical encoding
 
-#### 4.1.2 CWRU Bearing Fault Dataset
-- **Source**: Case Western Reserve University bearing fault database
-- **Size**: Multiple sensors, ~2000+ time-series samples per bearing condition
-- **Features**: Time-domain sensor readings (vibration measurements)
-- **Label**: Bearing condition (Normal = OK, Fault types = KO)
-- **Class Distribution**: Imbalanced (more normal samples than faults)
-- **Use Case**: Time-series classification; demonstrates FFT frequency analysis and temporal pattern detection
-
-#### 4.1.3 Feature Time Series Dataset
+#### 4.1.2 Feature Time Series Dataset
+- **Source**: Pre-engineered features from CWRU bearing fault raw time-series data
 - **File**: `feature_time_48k_2048_load_1.csv`
-- **Size**: Pre-engineered features from raw time-series data
-- **Features**: Already extracted statistical and frequency features
-- **Label**: OK/KO status
-- **Use Case**: Direct classification without preprocessing; validates feature importance ranking on pre-processed data
+- **Size**: 2300 samples, 10 columns (9 features + 1 label)
+- **Features**: 
+  - Statistical: `max`, `min`, `mean`, `sd` (standard deviation), `rms` (root mean square)
+  - Distribution: `skewness`, `kurtosis`
+  - Signal shape: `crest` (crest factor), `form` (form factor)
+  - Label: `fault` (bearing fault type identifier, e.g., Ball_007_1, Ball_014_2, IR_007_0)
+- **Label**: Bearing fault type (multi-class: Ball fault, Inner Race fault, Outer Race fault at various severities)
+- **Class Distribution**: Balanced across fault types (each fault condition has ~100-200 samples)
+- **Use Case**: Direct classification on pre-processed features; validates feature importance ranking without raw signal processing; demonstrates that engineered features can achieve comparable performance to end-to-end deep learning on raw waveforms
+
+#### 4.1.3 CWRU Bearing Fault Dataset (Raw Time Series)
+- **Source**: Case Western Reserve University bearing fault database
+- **File**: `cwru_all_timeseries_by_file.csv`
+- **Size**: ~200,000 time-series samples, 3 columns (time, signal, fault)
+- **Features**: 
+  - `time`: Timestamp in seconds (sampling rate: 48 kHz)
+  - `signal`: Vibration amplitude readings (continuous sensor measurements)
+  - `fault`: Bearing fault type identifier (e.g., B007_1_123, IR014_0_123)
+- **Label**: Bearing condition encoded in `fault` column (Normal = OK, Fault codes = KO)
+- **Class Distribution**: Imbalanced (more normal samples than fault samples; multiple fault types with varying severities)
+- **Use Case**: Raw waveform time-series classification; demonstrates FFT frequency spectrum analysis, time-domain pattern detection, and feature extraction pipeline (this dataset is the source for Feature Time Series Dataset in 4.1.2)
 
 ### 4.2 Titanic Results (Statistical + ML + Classical)
 

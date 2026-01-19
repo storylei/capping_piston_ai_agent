@@ -202,17 +202,26 @@ Pre-loaded sample datasets in `data/raw/` for quick testing:
   - `Cabin`, `Embarked` (categorical)
 - **Quick Start**: Load this dataset to explore basic statistical analysis and binary classification
 
-### CWRU Bearing Fault Dataset
+### CWRU Bearing Fault Dataset (Raw Time Series)
 - **File**: `cwru_all_timeseries_by_file.csv`
-- **Purpose**: Time series analysis with fault detection (OK/KO bearing status)
-- **Features**: Multiple sensor readings (vibration measurements)
-- **Quick Start**: Use this for time series analysis, FFT analysis, and fault detection
+- **Purpose**: Raw waveform time-series analysis with fault detection (OK/KO bearing status)
+- **Size**: ~200,000 time-series samples
+- **Features**: 
+  - `time`: Timestamp in seconds (sampling rate: 48 kHz)
+  - `signal`: Vibration amplitude readings (continuous sensor measurements)
+  - `fault`: Bearing fault type identifier (e.g., B007_1_123, IR014_0_123)
+- **Quick Start**: Use this for raw time series visualization, FFT frequency spectrum analysis, and temporal pattern detection
 
-### Feature Time Series Dataset
+### Feature Time Series Dataset (Pre-Engineered Features)
 - **File**: `feature_time_48k_2048_load_1.csv`
-- **Purpose**: Pre-extracted features from time series data
-- **Features**: Engineered features ready for classification
-- **Quick Start**: Load directly for feature analysis without preprocessing
+- **Purpose**: Pre-extracted features from CWRU bearing fault raw time-series data
+- **Size**: 2300 samples, 10 columns (9 features + 1 label)
+- **Features**: 
+  - Statistical: `max`, `min`, `mean`, `sd` (standard deviation), `rms` (root mean square)
+  - Distribution: `skewness`, `kurtosis`
+  - Signal shape: `crest` (crest factor), `form` (form factor)
+  - Label: `fault` (bearing fault type identifier)
+- **Quick Start**: Load directly for feature importance analysis and classification without raw signal processing; demonstrates that engineered features can achieve good performance
 
 
 ## 📖 Usage Guide
