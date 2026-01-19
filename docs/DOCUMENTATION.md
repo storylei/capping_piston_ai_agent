@@ -946,9 +946,9 @@ Explanation
 
 #### 4.3.4 Time Series Visualization
 
-![Chat Interface — Time Series Plot (Part 1)](images/time series -1.png)
+![Chat Interface — Time Series Plot (Part 1)](images/TS-1.png)
 
-![Chat Interface — Time Series Plot (Part 2)](images/time series -2.png)
+![Chat Interface — Time Series Plot (Part 2)](images/TS-2.png)
 
 Explanation
 - User Query: "Show time series of signal" or "plot signal over time"
