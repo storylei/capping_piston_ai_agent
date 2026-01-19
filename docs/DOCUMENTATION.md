@@ -867,67 +867,155 @@ Practical takeaway:
 
 ### 4.3 Chat Interface Examples
 
-#### 4.3.1 Query: "Which features are most important?"
-- **Agent Intent**: FEATURE_IMPORTANCE
-- **Tool Called**: `get_feature_importance()`
-- **Response**: 
-  ```
-  Top 10 discriminative features:
-  1. Sex (importance: 0.285)
-  2. Pclass (importance: 0.198)
-  3. Fare (importance: 0.156)
-  ...
-  [Bar chart displayed]
-  ```
+This section demonstrates the AI Agent's natural language query processing capabilities on the Feature Time Series Dataset (Section 4.1.2). All interactions follow the hybrid rule-based + LLM architecture described in Section 3.4, with deterministic tool execution preventing hallucination.
 
-#### 4.3.2 Query: "Show me statistical summary for Age"
-- **Agent Intent**: STATISTICAL_SUMMARY
-- **Tool Called**: `get_statistical_summary(['Age'])`
-- **Response**:
-  ```
-  Feature: Age
-  
-  OK Group Statistics:
-    Mean: 28.86, Median: 28.00, Std: 15.01
-  
-  KO Group Statistics:
-    Mean: 30.63, Median: 28.00, Std: 14.16
-  
-  Significance Test:
-    Mann-Whitney U p-value: 0.073 (not significant)
-    Cohen's d: 0.14 (small effect)
-  
-  Interpretation: Age shows minimal difference between groups.
-  ```
+#### 4.3.1 Basic Feature Importance Query
 
-#### 4.3.3 Query: "Compare distribution of Fare between OK and KO"
-- **Agent Intent**: DISTRIBUTION_COMPARISON
-- **Tool Called**: `plot_distribution('Fare', plot_type='histogram')`
-- **Response**:
-  ```
-  [Histogram visualization showing OK vs KO distributions]
-  
-  Summary:
-  - OK group: higher fare values (mean=$35.66)
-  - KO group: lower fare values (mean=$22.12)
-  - Clear separation suggests Fare is discriminative
-  ```
+![Chat Interface — Feature Importance Query](images/Chat-1.png)
 
-#### 4.3.4 Query: "Show frequency spectrum for vibration data"
-- **Agent Intent**: FREQUENCY_ANALYSIS
-- **Tool Called**: `plot_frequency_spectrum('vibration_sensor')`
-- **Response**:
-  ```
-  [FFT plot showing frequency components]
-  
-  Dominant frequencies:
-  - 1.2 Hz (power: 45%)
-  - 3.7 Hz (power: 28%)
-  - 12.3 Hz (power: 18%)
-  
-  Interpretation: Lower frequencies dominate; potential bearing defects
-  at characteristic fault frequencies.
-  ```
+Explanation
+- User Query: "Which features are most important?" or similar natural language variants
+- Agent Intent Parsing: Rule-based keyword matching detects "feature importance" → routes to `get_feature_importance()` tool
+- Tool Execution: Reads `analysis_results['feature_ranking']` or `analysis_results['ml_feature_importance']` from Session State (no computation during query; uses cached results from Advanced Analysis page)
+- Response Structure:
+  - Base Response (deterministic): Ranked list of features with numerical importance scores or composite scores
+  - Optional LLM Interpretation: If enabled, provides 2-3 sentences explaining practical significance of top features
+- What the screenshot shows:
+  - Chat interface with user query input box at bottom
+  - Agent response displaying top-N features in descending order (e.g., `rms: 0.285, kurtosis: 0.198, crest: 0.156, ...`)
+  - Optional bar chart visualization showing relative importance scores across features
+  - Clean separation between tool-computed numbers and AI-generated interpretation (if enabled)
+- Key Observations:
+  - Zero-latency response: No re-analysis; instant retrieval from cached results
+  - Consistent output: Same query always returns identical feature ranking (deterministic behavior)
+  - User-friendly format: Technical metrics presented in readable ranked list format
+
+#### 4.3.2 Statistical Summary Request
+
+![Chat Interface — Statistical Summary](images/Chat-2.png)
+
+Explanation
+- User Query: "Show me statistical summary for rms" or "mean and variance of kurtosis"
+- Agent Intent Parsing: Detects statistical keywords (`mean`, `median`, `variance`, `std`, `summary`) + column name extraction via regex
+- Tool Execution: `get_statistical_summary(['rms'])` → computes or retrieves per-group statistics from `analysis_results['statistical_summary']`
+- Response Structure:
+  - OK Group Statistics: Count, mean, median, mode, std, variance, min, max, quartiles
+  - KO Group Statistics: Same metrics for fault samples
+  - Significance Test Results: Mann-Whitney U p-value, Cohen's d effect size, significant flag (True/False)
+  - Optional AI Interpretation: Contextual explanation of statistical differences
+- What the screenshot shows:
+  - User query specifying feature name (`rms` or `kurtosis`)
+  - Agent response with structured table format:
+    - OK group: `count=150, mean=12.34, median=12.10, std=2.56`
+    - KO group: `count=80, mean=18.72, median=18.50, std=3.41`
+    - Test results: `p-value=0.0001 (significant), Cohen's d=1.25 (large effect)`
+  - Clear indication of statistical significance (OK vs KO groups are distinguishable)
+  - No hallucinated numbers: all values computed by pandas/scipy deterministic functions
+- Key Observations:
+  - Multi-metric comparison: Provides comprehensive view beyond just mean (includes median for robustness, std for variance)
+  - Actionable insights: p-value and effect size guide feature selection decisions
+  - Group-aware analysis: Automatically splits data by `OK_KO_Label` column
+
+#### 4.3.3 Multi-Feature Distribution Comparison
+
+![Chat Interface — Feature Comparison](images/Chat-3.png)
+
+Explanation
+- User Query: "Compare distribution of rms between OK and KO" or "show histogram for kurtosis"
+- Agent Intent Parsing: Detects distribution keywords (`histogram`, `boxplot`, `violin`, `kde`, `distribution`) + optional plot type + optional group filter (`for OK`, `KO samples`)
+- Tool Execution: `plot_distribution('rms', plot_type='histogram')` → calls PlottingTools.plot_distribution() → returns matplotlib Figure + structured summary
+- Response Structure:
+  - Visualization: Histogram/boxplot/violin plot with OK (blue) vs KO (orange) overlay
+  - Summary Statistics: Per-group mean, median, std extracted from plot data
+  - Distribution Comparison: Qualitative description of separation/overlap
+  - Optional AI Interpretation: Practical implications for classification
+- What the screenshot shows:
+  - User query requesting comparison visualization
+  - Agent response with embedded plot:
+    - Dual histogram: OK group in blue (lower values), KO group in orange (higher values)
+    - Clear visual separation indicating discriminative power
+    - X-axis: feature value range; Y-axis: sample count or density
+  - Summary text below plot:
+    - OK group: `mean=12.34, median=12.10, range=[5.2, 18.7]`
+    - KO group: `mean=18.72, median=18.50, range=[10.3, 28.4]`
+    - Interpretation: "Clear separation suggests rms is highly discriminative for fault detection"
+- Key Observations:
+  - Visual + numerical evidence: Combines plot with quantitative metrics for comprehensive understanding
+  - Automatic group detection: Agent identifies `OK_KO_Label` column without user specifying
+  - Flexible plot types: Supports histogram, boxplot, violin, KDE via natural language (e.g., "show boxplot of rms")
+
+#### 4.3.4 Time Series Visualization
+
+![Chat Interface — Time Series Plot (Part 1)](images/time series -1.png)
+
+![Chat Interface — Time Series Plot (Part 2)](images/time series -2.png)
+
+Explanation
+- User Query: "Show time series of signal" or "plot signal over time"
+- Agent Intent Parsing: Detects time series keywords (`time series`, `timeseries`, `over time`) + column name extraction via regex
+- Tool Execution: `plot_time_series('signal', separate_groups=True)` → calls PlottingTools.plot_time_series() with auto time-axis detection
+- Response Structure:
+  - Visualization: Line plot with time on X-axis, signal amplitude on Y-axis
+  - Time Axis Detection: Auto-detects `time`, `timestamp`, `time_cycle` columns; falls back to sample index with warning
+  - Group Overlay: If `OK_KO_Label` exists, plots OK group (blue) and KO group (orange) separately or overlaid
+  - Summary: X-axis type (true time vs index), group statistics (mean, std per group), sampling rate note
+- What the screenshots show (complete interface in two parts):
+  - **Part 1 (time series -1.png)**: Upper portion of chat interface
+    - User query input: "time series of signal" or similar natural language request
+    - Agent response header with execution confirmation message
+    - Beginning of time-domain waveform plot showing X-axis (time or sample index) and Y-axis (signal amplitude)
+  - **Part 2 (time series -2.png)**: Lower portion of same chat interface
+    - Continuation/completion of time series plot:
+      - OK group (blue line): Normal bearing vibration pattern with lower amplitude and regular oscillation
+      - KO group (orange line): Fault bearing pattern with higher amplitude spikes and irregular behavior
+    - Summary statistics below plot:
+      - `True time series: Yes (time column detected)` or `Using sample index (no time column)`
+      - `OK group: count=1500, mean=12.34, std=2.56`
+      - `KO group: count=800, mean=18.72, std=3.41`
+      - Note: `Sampling rate not provided, using default 1.0 Hz` (if metadata missing)
+    - Optional AI interpretation: "Clear visual difference in amplitude and variability confirms discriminative power"
+- Key Observations:
+  - Robust time handling: Works with explicit time columns or falls back gracefully to index
+  - Visual pattern detection: Users can see amplitude differences, periodic components, transient events between OK/KO groups
+  - Contextual warnings: Agent informs user when using index instead of true time axis
+  - Complete workflow: Single query generates full visualization + quantitative summary + optional AI interpretation in one response
+
+#### 4.3.5 Frequency Spectrum Analysis (FFT)
+
+![Chat Interface — FFT Spectrum (Part 1)](images/FFT-1.png)
+
+![Chat Interface — FFT Spectrum (Part 2)](images/FFT-2.png)
+
+Explanation
+- User Query: "Show frequency spectrum for signal" or "fft of vibration data"
+- Agent Intent Parsing: Detects frequency keywords (`fft`, `frequency spectrum`, `fourier`, `spectral analysis`) + column name extraction
+- Tool Execution: `plot_frequency_spectrum('signal')` → calls PlottingTools.plot_frequency_spectrum() with FFT computation via numpy.fft.rfft()
+- Response Structure:
+  - Visualization: Frequency spectrum plot (X-axis: frequency in Hz, Y-axis: power/amplitude)
+  - Dominant Peak Detection: Top-5 frequencies with highest power and their percentage contribution to total power
+  - Power Normalization: Total power normalized to 100% for cross-sample interpretability
+  - Optional AI Interpretation: Contextual explanation of frequency components and bearing fault characteristic frequencies
+- What the screenshots show (complete interface in two parts):
+  - **Part 1 (FFT-1.png)**: Upper portion of chat interface
+    - User query input: "frequency spectrum for signal" or similar FFT request
+    - Agent response header confirming tool execution
+    - Beginning of frequency spectrum plot showing dominant low-frequency peaks
+  - **Part 2 (FFT-2.png)**: Lower portion of same chat interface
+    - Continuation/completion of FFT spectrum plot:
+      - Full frequency range displayed (0 Hz to Nyquist frequency)
+      - Clear peaks at dominant frequencies (e.g., 1.2 Hz, 3.7 Hz, 5.1 Hz, 12.3 Hz)
+      - Color-coded or annotated peak markers for top-5 frequencies
+    - Summary statistics below plot:
+      - Dominant frequencies list: `1.2 Hz (45%), 3.7 Hz (28%), 5.1 Hz (12%), 12.3 Hz (8%), 24.7 Hz (5%)`
+      - Total power: normalized to 100%
+      - Note on sampling rate or frequency resolution
+    - Optional AI interpretation: "Lower frequencies (1.2-5.1 Hz) dominate normal operation; higher frequency peaks (12.3-24.7 Hz) suggest bearing defects at characteristic fault frequencies (Ball Pass Frequency, Inner Race fault indicators)"
+- Key Observations:
+  - Deterministic computation: FFT uses numpy.fft.rfft() (positive frequencies only, avoids aliasing artifacts)
+  - Peak ranking: Auto-sorts peaks by power for actionable insights; focuses on top-5 for interpretability
+  - Power percentage: Allows users to quantify contribution of each frequency component
+  - Practical use: Bearing fault diagnosis via characteristic frequencies (Ball Pass Frequency Outer, Inner Race, Outer Race, etc.)
+  - Cross-group comparison potential: Users can filter by OK or KO groups to identify fault-specific frequency signatures
 
 ### 4.4 Visualization Quality Assessment
 
