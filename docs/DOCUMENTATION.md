@@ -517,7 +517,7 @@ def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str
     # 3) Return structured result
     return {
         'success': True,
-        'message': f"✅ Generated time series plot for {column}",
+        'message': f"Generated time series plot for {column}",
         'plot': result['figure'],  # matplotlib Figure object
         'summary': {  # CRITICAL: deterministic facts for LLM interpretation
             'plot_type': 'time_series',
@@ -532,7 +532,7 @@ def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str
             },
             'note': result.get('warning', None)
         },
-        'warning': "⚠️ No time column found, using sample index" if not result.get('has_time_axis') else None
+        'warning': "No time column found, using sample index" if not result.get('has_time_axis') else None
     }
 ```
 
@@ -553,10 +553,10 @@ def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str
 
 **Base Response** (always included, no LLM):
 ```
-✅ Generated time series plot for vibration_sensor
+Generated time series plot for vibration_sensor
 
 ---
-🧾 **Plot Interpretation (from tool summary)**
+**Plot Interpretation (from tool summary)**
 - Plot type: time_series
 - Column: vibration_sensor
 - X axis: time_cycles
@@ -567,7 +567,7 @@ def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str
 - OK: count=150, mean=12.34, std=2.56
 - KO: count=80, mean=18.72, std=3.41
 
-⚠️ Note: Sampling rate not provided, using default 1.0 Hz
+Note: Sampling rate not provided, using default 1.0 Hz
 ```
 
 **LLM Interpretation** (optional, when `enable_llm_interpretation=True`):
@@ -602,7 +602,7 @@ def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str
 - **Output appended to response**:
   ```
   ---
-  🤖 **AI Analysis:**
+  **AI Analysis:**
   The KO group shows significantly higher mean vibration (18.72 vs 12.34), indicating potential mechanical fault. 
   The larger standard deviation in KO samples (3.41 vs 2.56) suggests more erratic behavior. 
   This feature effectively separates faulty from normal bearings.
@@ -640,32 +640,32 @@ def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str
 
 **No Data Loaded**:
 ```
-⚠️ Please load a dataset first.
+Please load a dataset first.
 ```
 
 **Unknown Intent + No LLM Fallback**:
 ```
-⚠️ I couldn't understand the request. Try: 'mean and variance of Age', or 'plot histogram of Age'.
+I couldn't understand the request. Try: 'mean and variance of Age', or 'plot histogram of Age'.
 ```
 
 **Column Not Found**:
 ```
-⚠️ No valid numerical columns found.
+No valid numerical columns found.
 ```
 
 **Tool Execution Failure**:
 ```
-❌ Tool error: FFT failed - column 'sensor_x' not found in dataset
+Tool error: FFT failed - column 'sensor_x' not found in dataset
 ```
 
 **LLM Connection Error** (Ollama not running):
 ```
-❌ Error: Cannot connect to Ollama. Please start Ollama service.
+Error: Cannot connect to Ollama. Please start Ollama service.
 ```
 
 **Missing API Key** (OpenAI/Claude/Gemini):
 ```
-⚠️ Warning: openai requires an API key but none was provided.
+Warning: openai requires an API key but none was provided.
 ```
 
 **Design Rationale**:
