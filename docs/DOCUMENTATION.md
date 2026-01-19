@@ -419,8 +419,280 @@ Per model, compute metrics on held-out test data:
 - Feature count impact visible via `feature_vs_accuracy` plot (shows if more features help or plateau)
 
 ### 3.4 AI Agent
-- Multi-backend LLM; rule-first intent parsing, LLM as fallback; tools return structured summary+figure to avoid hallucination.
-- Supported intents: stats summary, feature importance, time series, FFT spectrum, distribution comparison, correlation heatmap, feature comparison.
+
+**Architecture Overview**:
+The AI Agent (`StatisticalAgent`) provides natural language interface for dataset analysis through a hybrid rule-based + LLM approach. Core design prevents hallucination: all numerical results are computed by deterministic Python tools; LLM only provides optional natural language interpretation of tool-generated summaries.
+
+**Component Structure**:
+
+**1. StatisticalAgent** ([src/agent/agent_core.py](src/agent/agent_core.py))
+- Main orchestrator for query processing and tool dispatch
+- Maintains data context (`processed_df`), analysis results (`analysis_results`), and conversation history
+- Coordinates LLMInterface (backend communication), ConversationManager (chat state), and PlottingTools (visualization)
+
+**2. LLMInterface** ([src/agent/llm_interface.py](src/agent/llm_interface.py))
+- Unified multi-backend LLM wrapper supporting:
+  - **Ollama** (local): Default `llama3:latest`, endpoint `http://localhost:11434`
+  - **OpenAI**: Default `gpt-3.5-turbo`, requires `OPENAI_API_KEY`
+  - **Claude**: Default `claude-3-sonnet-20240229`, requires `ANTHROPIC_API_KEY`
+  - **Gemini**: Default `gemini-pro`, requires `GOOGLE_API_KEY`
+  - **DeepSeek**: Default `deepseek-chat`, requires `DEEPSEEK_API_KEY`
+- API key resolution: parameter → environment variable → None (prompts warning)
+- Error handling: connection failures, missing libraries, invalid keys
+
+**3. ConversationManager** ([src/agent/conversation.py](src/agent/conversation.py))
+- Manages chat history with configurable max length (default 20 messages)
+- Maintains system prompt with current dataset context (column names, OK/KO counts, numerical features)
+- Auto-trims history: keeps first message (system prompt) + most recent N messages when limit exceeded
+- Adds timestamp metadata to each message for audit trail
+
+**4. PlottingTools** ([src/agent/plotting_tools.py](src/agent/plotting_tools.py))
+- Stateless visualization functions (shared with Data Analysis UI page)
+- All plot functions return `{'success': bool, 'figure': matplotlib.Figure, 'summary': dict, 'error': str}`
+- **Deterministic summaries**: structured facts (statistics, peak frequencies, group comparisons) prevent LLM hallucination
+- Robust time axis detection: auto-detect datetime/numeric time columns; fallback to sample index with warning
+- Group-aware plotting: auto-resolves group column (`OK_KO_Label` → `fault` → `label` → `class` fallback)
+
+**Query Processing Pipeline**:
+
+**Step 1: Intent Parsing** (`_parse_intent()`)
+- **Rule-based pattern matching** (primary method, deterministic):
+  - Keyword detection: `["feature importance", "fft", "histogram", "time series", "mean", "variance"]`
+  - Column name extraction: word-boundary regex match against `processed_df.columns` (prevents substring false positives)
+  - Group filter parsing: detect `["for OK", "OK samples", "KO group"]` → set `filter_group` parameter
+  - Plot type inference: `["boxplot", "violin", "kde"]` → select visualization variant
+- **Output**: Intent dictionary with tool name and arguments:
+  ```python
+  {
+    'type': 'tool',  # or 'unknown'
+    'tool': 'plot_time_series',
+    'args': {'column': 'vibration_sensor', 'separate_groups': True, 'filter_group': 'KO'}
+  }
+  ```
+- **LLM fallback** (optional, when `enable_llm_fallback_chat=True`):
+  - Triggered only when rule-based parsing returns `'type': 'unknown'`
+  - LLM does NOT compute numbers; only suggests correct query syntax
+  - System prompt: "Do NOT compute results. Instruct user how to ask using tool keywords like 'mean variance X', 'histogram X'"
+
+**Step 2: Column Disambiguation** (`_resolve_columns()`)
+- Handles ambiguous user queries (e.g., "show time series" without column name)
+- **Multi-tier fallback strategy**:
+  1. **Matched columns** (from user message): If user mentioned specific columns, validate they exist
+  2. **Analysis-based selection** (`_get_analysis_based_columns()`):
+     - Extract top-N features from `analysis_results['feature_ranking']` or `analysis_results['ml_feature_importance']`
+     - Exclude time-like columns for value plots (time series Y-axis, FFT input)
+     - Prioritize columns with value keywords: `["signal", "sensor", "vibration", "current", "temperature"]`
+  3. **Default numerical columns**: All numeric columns excluding `OK_KO_Label` and time columns
+- **Purpose-aware filtering**:
+  - `purpose='y'`: For time series/FFT, avoid time columns unless ONLY time columns matched
+  - `purpose='x'`: For time axis, prefer time-like columns
+  - `purpose='any'`: For distributions/statistics, allow all column types
+
+**Step 3: Tool Execution** (deterministic Python functions)
+
+**Tool Registry**:
+```python
+tool_functions = {
+  'get_statistical_summary': compute mean/median/mode/std/var/min/max per group,
+  'plot_time_series': time-domain waveform or index plot with OK/KO overlay,
+  'plot_frequency_spectrum': FFT analysis with dominant peak detection,
+  'plot_distribution': histogram/boxplot/violin/KDE with group comparison,
+  'get_feature_importance': ranked feature list from analysis results,
+  'compare_features': multi-column side-by-side boxplot matrix
+}
+```
+
+**Tool Function Pattern** (example: `_tool_plot_time_series`):
+```python
+def _tool_plot_time_series(column: str, separate_groups: bool, filter_group: str) -> dict:
+    # 1) Validate input
+    if filter_group and 'OK_KO_Label' in df.columns:
+        plot_df = df[df['OK_KO_Label'] == filter_group].copy()
+    else:
+        plot_df = df
+    
+    # 2) Call PlottingTools (deterministic computation)
+    result = self.plotter.plot_time_series(plot_df, column=column, separate_groups=separate_groups)
+    
+    # 3) Return structured result
+    return {
+        'success': True,
+        'message': f"✅ Generated time series plot for {column}",
+        'plot': result['figure'],  # matplotlib Figure object
+        'summary': {  # CRITICAL: deterministic facts for LLM interpretation
+            'plot_type': 'time_series',
+            'column': column,
+            'is_true_time_series': result.get('has_time_axis', False),
+            'x_axis': result.get('time_column', 'sample_index'),
+            'has_groups': 'OK_KO_Label' in df.columns,
+            'groups': ['OK', 'KO'],
+            'group_stats': {
+                'OK': {'count': 150, 'mean': 12.34, 'std': 2.56},
+                'KO': {'count': 80, 'mean': 18.72, 'std': 3.41}
+            },
+            'note': result.get('warning', None)
+        },
+        'warning': "⚠️ No time column found, using sample index" if not result.get('has_time_axis') else None
+    }
+```
+
+**Tool Output Contract** (enforced pattern):
+- `success`: Boolean (tool execution status)
+- `message`: String (human-readable summary with metrics)
+- `plot`: Matplotlib Figure or None (visualization)
+- `summary`: Dictionary (structured facts for LLM interpretation):
+  - `plot_type`: Plot category identifier
+  - `column`: Feature name(s)
+  - `has_groups`: Boolean (whether OK/KO groups exist)
+  - `groups`: List of group labels
+  - `group_stats`: Per-group statistics (count, mean, std, etc.)
+  - `note`: Optional context (warnings, interpretation hints)
+- `warning`: String (non-critical alerts, e.g., "No time axis, using index")
+
+**Step 4: Response Generation** (`_render_response_from_tool()`)
+
+**Base Response** (always included, no LLM):
+```
+  Generated time series plot for vibration_sensor
+
+---
+**Plot Interpretation (from tool summary)**
+- Plot type: time_series
+- Column: vibration_sensor
+- X axis: time_cycles
+- True time series (real time axis detected)
+- Groups: OK, KO (by OK_KO_Label)
+
+**Statistics by group:**
+- OK: count=150, mean=12.34, std=2.56
+- KO: count=80, mean=18.72, std=3.41
+
+  Note: Sampling rate not provided, using default 1.0 Hz
+```
+
+**LLM Interpretation** (optional, when `enable_llm_interpretation=True`):
+- **Input to LLM**: Structured summary dict (NOT plot image or raw data)
+  ```python
+  interpretation_prompt = f"""
+  Tool used: plot_time_series
+  
+  **Dataset Context (CRITICAL):**
+  - Task type: classification
+  - Label column: OK_KO_Label
+  - Groups: OK, KO
+  - Sample counts: {{'OK': 150, 'KO': 80}}
+  - Analysis goal: Binary classification: distinguish OK from KO
+  
+  **Analysis Results:**
+  - Plot type: time_series
+  - Column: vibration_sensor
+  - Is true time series: True
+  - Result has groups: Yes (OK_KO_Label)
+  - Groups in result: OK, KO
+  
+  **Group Statistics (USE THESE FOR COMPARISON):**
+  - OK: count=150, mean=12.34, std=2.56
+  - KO: count=80, mean=18.72, std=3.41
+  
+  Provide 2-3 sentences: What do these numbers mean? Is there meaningful difference between groups? What actionable insight?
+  IMPORTANT: Only explain the numbers shown above. Do NOT invent new statistics.
+  """
+  ```
+- **LLM parameters**: `temperature=0.3` (deterministic), `max_tokens=200` (brief)
+- **Output appended to response**:
+  ```
+  ---
+ **AI Analysis:**
+  The KO group shows significantly higher mean vibration (18.72 vs 12.34), indicating potential mechanical fault. 
+  The larger standard deviation in KO samples (3.41 vs 2.56) suggests more erratic behavior. 
+  This feature effectively separates faulty from normal bearings.
+  ```
+
+**Anti-Hallucination Mechanisms**:
+
+1. **Tool-computed Numbers**: All statistics calculated by Python (pandas/numpy); LLM never generates metrics
+2. **Structured Summaries**: Tools return dictionaries with keys like `group_stats`, not free-text descriptions
+3. **Context Injection**: LLM prompt includes full task context (label column, groups, sample counts) to prevent generic responses
+4. **Validation Prompts**: System prompt explicitly forbids inventing numbers: "Do NOT compute. Only explain the numbers shown."
+5. **Fallback Disabled Option**: `enable_llm_interpretation=False` skips LLM entirely (pure Python output)
+6. **Short Output Window**: `max_tokens=200` limits LLM to interpretation, prevents fabrication
+
+**Supported Query Patterns** (with examples):
+
+| Intent | Keywords | Example Query | Tool Called | Args |
+|--------|----------|---------------|-------------|------|
+| Statistical Summary | mean, median, variance, std, summary, statistics | "mean and variance of Age" | `get_statistical_summary` | `columns=['Age'], metrics=['mean', 'variance']` |
+| Feature Importance | feature importance, rank features, most important | "which features are most important?" | `get_feature_importance` | `top_n=10` |
+| Time Series | time series, timeseries | "time series of vibration for OK samples" | `plot_time_series` | `column='vibration', filter_group='OK'` |
+| FFT Spectrum | fft, frequency spectrum, fourier | "frequency spectrum of current signal" | `plot_frequency_spectrum` | `column='current'` |
+| Distribution | histogram, boxplot, violin, kde, distribution | "boxplot of Fare" | `plot_distribution` | `column='Fare', plot_type='boxplot'` |
+| Feature Comparison | compare | "compare Age, Fare, Pclass" | `compare_features` | `columns=['Age', 'Fare', 'Pclass']` |
+| Group Filtering | for OK, OK samples, KO group | "histogram of Age for KO group" | `plot_distribution` | `column='Age', filter_group='KO'` |
+
+**Session State Integration**:
+- Agent initialized in Configuration Step 4 with LLM settings
+- Data context set via `set_data_context(processed_df)` after preprocessing
+- Analysis results injected via `set_analysis_results(analysis_results)` after Advanced Analysis
+- Chat history persists in `st.session_state.chat_history` across page navigation
+- Agent instance stored in `st.session_state.agent` for stateful conversation
+
+**Error Handling & User Feedback**:
+
+**No Data Loaded**:
+```
+  Please load a dataset first.
+```
+
+**Unknown Intent + No LLM Fallback**:
+```
+  I couldn't understand the request. Try: 'mean and variance of Age', or 'plot histogram of Age'.
+```
+
+**Column Not Found**:
+```
+  No valid numerical columns found.
+```
+
+**Tool Execution Failure**:
+```
+  Tool error: FFT failed - column 'sensor_x' not found in dataset
+```
+
+**LLM Connection Error** (Ollama not running):
+```
+  Error: Cannot connect to Ollama. Please start Ollama service.
+```
+
+**Missing API Key** (OpenAI/Claude/Gemini):
+```
+  Warning: openai requires an API key but none was provided.
+```
+
+**Design Rationale**:
+
+**Why Rule-Based Intent Parsing?**
+- Deterministic: Same query always produces same tool call (reproducible analysis)
+- Fast: No LLM latency for common queries (statistical summary, plot requests)
+- Reliable: Works offline with Ollama; no dependency on cloud API availability
+- Transparent: Users can predict behavior; no "black box" routing
+
+**Why Structured Summaries Over Image Analysis?**
+- LLMs cannot reliably extract numbers from plot images (hallucination risk)
+- Structured dictionaries provide ground truth for interpretation
+- Separation of concerns: Python computes facts, LLM explains significance
+- Enables programmatic validation (e.g., check if LLM mentioned actual group names)
+
+**Why Multi-Backend LLM Support?**
+- Local deployment: Ollama for offline/airgapped environments
+- Cloud scaling: OpenAI/Claude/Gemini for production performance
+- Cost optimization: DeepSeek as budget-friendly alternative
+- No vendor lock-in: switch backends without code changes
+
+**Why Optional LLM Interpretation?**
+- Some users prefer raw numbers (scientists, engineers)
+- Trust building: show deterministic base + optional AI layer
+- Debugging: disable LLM to isolate tool vs. interpretation issues
+- Regulatory compliance: pure Python output for auditable systems
 
 ### 3.5 GUI
 
