@@ -1017,23 +1017,6 @@ Explanation
   - Practical use: Bearing fault diagnosis via characteristic frequencies (Ball Pass Frequency Outer, Inner Race, Outer Race, etc.)
   - Cross-group comparison potential: Users can filter by OK or KO groups to identify fault-specific frequency signatures
 
-### 4.4 Visualization Quality Assessment
-
-#### 4.4.1 Time Series Plot
-- Auto-detection of time column: Success rate ~95% on standard naming conventions
-- Fallback to index: Handles unlabeled time series
-- Multi-series overlay: Clear color differentiation for OK/KO groups
-
-#### 4.4.2 FFT Frequency Spectrum
-- Positive frequency extraction: Correct implementation avoiding aliasing
-- Peak detection: Identifies top-5 dominant frequencies
-- Power normalization: Allows cross-dataset comparison
-
-#### 4.4.3 Distribution Comparison
-- Histogram bins: Auto-calculated via Freedman-Diaconis rule
-- Overlay KDE curves: Smoothed distribution estimation
-- Box plots: Show quartiles and outliers clearly
-- Violin plots: Show full distribution shape
 
 ## 5. Limitations & Future Work
 
