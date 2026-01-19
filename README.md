@@ -104,36 +104,30 @@ The system follows a modular architecture with clear separation of concerns:
 │  - Results Display                       │
 └──────────────┬───────────────────────────┘
                │
-        ┌──────▼──────┐
-        │ Data        │
-        │ Processing  │
-        │ (loader,    │
-        │ preprocessor)
-        └──────┬──────┘
+        ┌──────▼──────────────┐
+        │   Data Processing   │
+        └──────┬──────────────┘
                │
         ┌──────▼──────────────────────┐
         │   Analysis                  │
         │   - Statistical Tests       │
         │   - Feature Importance      │
         │   - Model Training          │
-        └──────┬─────────────────────┐
+        └──────┬──────────────────────┘
                │
         ┌──────▼──────────────────────┐
-        │   AI Agent (agent_core)  │
+        │   AI Agent (agent_core)     │
         │   - LLM Interface (LLAMA3)  │
         │   - Intent Understanding    │
         │   - Function Calling        │
         │   - Tool Execution          │
-        └──────┬─────────────────────┐
+        └──────┬──────────────────────┘
                │
-        ┌──────▼──────┐
-        │ Plotting    │
-        │ Tools       │
-        │ - Time      │
-        │   Series    │
-        │ - FFT       │
-        │ - Plots     │
-        └─────────────┘
+        ┌──────▼─────────────┐
+        │   Plotting Tools   │
+        │   - Time Series    │
+        │   - FFT Plots      │
+        └────────────────────┘
 ```
 
 ## 📁 Project Structure
@@ -458,7 +452,7 @@ Interact with your data using natural language queries - no code required:
 
 ## 🚨 Troubleshooting
 
-### "Cannot connect to Ollama"
+### Cannot connect to Ollama
 ```powershell
 # Check if Ollama is running
 ollama list
@@ -471,13 +465,13 @@ ollama run llama3:latest
 # Type "hello" to test, then /bye to exit
 ```
 
-### "Model 'llama3:latest' not found"
+### Model 'llama3:latest' not found
 ```powershell
 ollama pull llama3:latest
 # Wait for download to complete
 ```
 
-### "Ollama service not responding"
+### Ollama service not responding
 - Restart computer (Ollama should auto-start)
 - Or reinstall Ollama from https://ollama.com
 - Check if port 11434 is available
@@ -491,8 +485,6 @@ pip install autogluon --no-cache-dir
 
 ## 📧 Contact
 
-Prof. Stefano Quer - stefano.quer@polito.it
-
 Gao Lei  - s327756@studenti.polito.it
 
 Deng Lan  - s338219@studenti.polito.it
@@ -500,6 +492,11 @@ Deng Lan  - s338219@studenti.polito.it
 ## 🎓 Detailed Documentation
 
 For complete system architecture, design choices, experimental evaluation, and limitations, see:
-- **DOCUMENTATION.md** - Full technical documentation
-- **PRESENTATION.pptx** - 15-minute presentation slides
+- [📖 DOCUMENTATION.md](docs/DOCUMENTATION.md) - Full technical documentation
+- [🎬 PRESENTATION.pptx](docs/PRESENTATION.pptx) - 15-minute presentation slides
+
+### 📦 Repository
+
+- **GitHub Repository**: https://github.com/storylei/capping_piston_ai_agent
+
 
