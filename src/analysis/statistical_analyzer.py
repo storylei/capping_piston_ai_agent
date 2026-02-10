@@ -18,6 +18,8 @@ class StatisticalAnalyzer:
     def __init__(self):
         self.analysis_results = {}
         self.significance_level = 0.05
+        self.min_cohens_d = 0.2  # Minimum Cohen's d for numerical features (small effect)
+        self.min_cramers_v = 0.1  # Minimum Cramér's V for categorical features (small effect)
         
     def analyze_all_features(self, df: pd.DataFrame, target_col: str = 'OK_KO_Label') -> Dict[str, Any]:
         """
@@ -278,6 +280,9 @@ class StatisticalAnalyzer:
             
             composite_score = significance_score * effect_size * difference_ratio
             
+            # Significance: p-value < 0.05 AND effect size > minimum threshold
+            is_significant = (mannwhitney_p < self.significance_level) and (effect_size >= self.min_cohens_d)
+            
             feature_scores.append({
                 'feature': feature,
                 'type': 'numerical',
@@ -285,7 +290,7 @@ class StatisticalAnalyzer:
                 'effect_size': effect_size,
                 'difference_ratio': difference_ratio,
                 'composite_score': composite_score,
-                'significant': mannwhitney_p < self.significance_level
+                'significant': is_significant
             })
         
         # Process categorical features
@@ -300,6 +305,9 @@ class StatisticalAnalyzer:
             
             composite_score = significance_score * cramers_v
             
+            # Significance: p-value < 0.05 AND effect size > minimum threshold
+            is_significant = (chi2_p < self.significance_level) and (cramers_v >= self.min_cramers_v)
+            
             feature_scores.append({
                 'feature': feature,
                 'type': 'categorical',
@@ -307,7 +315,7 @@ class StatisticalAnalyzer:
                 'effect_size': cramers_v,
                 'difference_ratio': cramers_v,  # Use Cramér's V as difference measure
                 'composite_score': composite_score,
-                'significant': chi2_p < self.significance_level
+                'significant': is_significant
             })
         
         # Sort by composite score (descending)

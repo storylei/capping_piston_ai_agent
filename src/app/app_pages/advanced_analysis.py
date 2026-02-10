@@ -116,7 +116,7 @@ def display():
                         st.metric("Significant Features", significant_count)
                     with col2:
                         st.metric("Total Features Analyzed", 
-                                 summary.get('numerical_features', 0) + summary.get('categorical_features', 0))
+                        summary.get('numerical_features', 0) + summary.get('categorical_features', 0))
                     with col3:
                         st.metric("OK Samples", summary.get('ok_samples', 0))
                     with col4:
@@ -145,7 +145,7 @@ def display():
                     if 'Statistical Tests' in analysis_types:
                         with tabs[tab_idx]:
                             st.subheader("📊 Statistical Analysis Results")
-                            
+                                
                             if feature_ranking:
                                 st.write("Features ranked by statistical significance (p-value and effect size)")
                                 
@@ -154,31 +154,64 @@ def display():
                                 display_cols = ['feature', 'type', 'p_value', 'effect_size', 'significant']
                                 available_cols = [col for col in display_cols if col in stat_df.columns]
                                 display_df = stat_df[available_cols].copy()
+
+                                # Add t-test and KS test results for numerical features
+                                numerical_analysis = results.get('numerical_analysis', {})
+                                display_df['t_test_p'] = display_df['feature'].apply(
+                                    lambda f: numerical_analysis.get(f, {}).get('statistical_tests', {}).get('t_test', {}).get('p_value')
+                                )
+                                display_df['t_test_sig'] = display_df['feature'].apply(
+                                    lambda f: numerical_analysis.get(f, {}).get('statistical_tests', {}).get('t_test', {}).get('significant')
+                                )
+                                display_df['ks_test_p'] = display_df['feature'].apply(
+                                    lambda f: numerical_analysis.get(f, {}).get('statistical_tests', {}).get('ks_test', {}).get('p_value')
+                                )
+                                display_df['ks_test_sig'] = display_df['feature'].apply(
+                                    lambda f: numerical_analysis.get(f, {}).get('statistical_tests', {}).get('ks_test', {}).get('significant')
+                                )
                                 
-                                for col in ['p_value', 'effect_size']:
+                                for col in ['p_value', 'effect_size', 't_test_p', 'ks_test_p']:
                                     if col in display_df.columns:
                                         display_df[col] = display_df[col].round(6)
                                 
                                 st.dataframe(display_df, height=400, use_container_width=True)
                                 
-                                # P-value visualization
+                                # Feature importance visualization using composite score
                                 fig, ax = plt.subplots(figsize=(10, 6))
                                 features = [item['feature'] for item in feature_ranking]
+                                composite_scores = [item.get('composite_score', 0) for item in feature_ranking]
                                 p_values = [item.get('p_value', 1) for item in feature_ranking]
                                 
-                                # Use negative log p-values for better visualization
+                                bars = ax.barh(features[::-1], composite_scores[::-1])
+                                ax.set_xlabel('Composite Discriminative Score')
+                                ax.set_title('Feature Discriminative Power (Statistical Tests)')
+                                ax.text(0.02, 0.98, 'Score = -log10(p-value) × |Effect Size| × |Difference Ratio|',
+                                       transform=ax.transAxes, verticalalignment='top',
+                                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=9)
+                                
+                                # Color gradient based on composite score
+                                if max(composite_scores) > 0:
+                                    for i, bar in enumerate(bars):
+                                        bar.set_color(plt.cm.viridis(composite_scores[::-1][i] / max(composite_scores)))
+                                
+                                plt.tight_layout()
+                                st.pyplot(fig, use_container_width=True)
+                                plt.close(fig)
+                                
+                                # Additional p-value reference visualization
+                                fig, ax = plt.subplots(figsize=(10, 6))
                                 neg_log_p = [-np.log10(max(p, 1e-16)) for p in p_values]
                                 
                                 bars = ax.barh(features[::-1], neg_log_p[::-1])
                                 ax.set_xlabel('-log10(p-value)')
-                                ax.set_title('Statistical Significance of Features')
+                                ax.set_title('Statistical Significance Reference (p-values only)')
                                 ax.axvline(-np.log10(0.05), color='red', linestyle='--', alpha=0.7, label='p=0.05 threshold')
                                 ax.legend()
                                 
-                                # Color gradient based on significance
+                                # Color gradient based on p-value significance
                                 if max(neg_log_p) > 0:
                                     for i, bar in enumerate(bars):
-                                        bar.set_color(plt.cm.viridis(neg_log_p[::-1][i] / max(neg_log_p)))
+                                        bar.set_color(plt.cm.RdYlGn(neg_log_p[::-1][i] / max(neg_log_p)))
                                 
                                 plt.tight_layout()
                                 st.pyplot(fig, use_container_width=True)
