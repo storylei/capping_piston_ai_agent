@@ -842,8 +842,7 @@ Explanation
 Explanation
 - Dataset: same Titanic data as Section 4.2; preset: medium_quality (default). AutoGluon trains an ensemble and reports validation metrics.
 - Leaderboard: LightGBM is the top validation model (score ≈ 0.8324) with low prediction latency; WeightedEnsemble_L2 (stack level 2) combines base learners.
-- Feature importance (permutation): Name ranks highest because of high cardinality (ID/text effect), followed by Sex, Ticket, Pclass, and Age; Embarked and Fare rank lower in this run.
-- Caution: high-cardinality ID/text columns can dominate permutation importance via memorization. Current version does not auto-exclude them; a future enhancement is to add a pre-filter step before ML importance to avoid this leakage.
+- Feature importance (permutation): Name ranks highest because the model picked up on titles like 'Mr.', 'Miss', or 'Master', which act as strong proxies for gender and social status.This shows that the AI found hidden value in passenger names that traditional statistics missed. It followed by Sex, Ticket, Pclass, and Age; Embarked and Fare rank lower in this run.
 
 #### 4.2.3 Classical ML Model Training Results
 
